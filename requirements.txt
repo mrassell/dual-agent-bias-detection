@@ -1,0 +1,7 @@
+mcp[cli]>=1.0
+pydantic>=2
+torch
+transformers>=4.36
+numpy
+pandas>=2.0
+scikit-learn>=1.3
