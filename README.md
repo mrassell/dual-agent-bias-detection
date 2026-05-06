@@ -43,3 +43,19 @@ python scripts/run_deliverables.py
 Full test split: `export BASIL_EVAL_CAP=0`
 
 `from mcp_server.basil_dataset import load_basil_sentences`
+
+## Notebooks and scripts
+
+- `Primary_Auditor_LLM.ipynb` — sentence-level auditor (RoBERTa-BABE) emitting structured bias judgments.
+- `Secondary_Verifier_LLM.ipynb` — NLI verifier (BART-large-MNLI) checking whether the auditor's judgment is supported; aggregates verified document scores.
+- `basil_eda.ipynb` — exploratory analysis of the BASIL corpus.
+- `BASIL_Bias_Baseline.ipynb` — older experimental notebook.
+- `proposal_math.py` — scoring functions matching the proposal equations (sentence scoring, article aggregation, revision rate, MAE).
+- `secondary_verifier.py` — standalone secondary verifier script.
+
+```bash
+python secondary_verifier.py \
+  --input-jsonl /path/to/auditor_sentence_judgments.jsonl \
+  --output-jsonl /path/to/secondary_verifier_predictions.jsonl \
+  --summary-json /path/to/secondary_verifier_summary.json
+```
