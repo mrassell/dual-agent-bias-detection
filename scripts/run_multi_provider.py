@@ -54,7 +54,7 @@ OUTPUTS = ROOT / "outputs"
 SAMPLE_PER_OUTLET = int(os.environ.get("SAMPLE_SIZE", "67"))
 
 GPT_MODEL    = "gpt-4o-mini"
-CLAUDE_MODEL = "claude-3-5-haiku-20241022"
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 
 SYSTEM_PROMPT = """You are a media bias classifier. Score the following news sentence for media bias.
 Return JSON only — no other text:
@@ -86,6 +86,14 @@ def _load_threshold() -> float:
 # ------------------------------------------------------------------ #
 
 def _parse(raw: str) -> dict:
+    """Parse JSON from model response, tolerating markdown fences and preamble."""
+    import re
+    # Strip markdown code fences if present
+    raw = re.sub(r"```(?:json)?\s*", "", raw).strip()
+    # Extract the first {...} block in case there's preamble text
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if m:
+        raw = m.group(0)
     data = json.loads(raw)
     return {
         "bias_score": float(data.get("bias_score", 0.5)),
@@ -98,7 +106,7 @@ def score_gpt(sentence: str) -> dict:
     client = openai_sdk.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
     resp = client.chat.completions.create(
         model=GPT_MODEL,
-        max_tokens=150,
+        max_tokens=300,
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -114,11 +122,12 @@ def score_claude(sentence: str) -> dict:
     client = anthropic_sdk.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     resp = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=150,
+        max_tokens=300,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": f"Sentence: {sentence}"}],
     )
-    result = _parse(resp.content[0].text.strip())
+    text = resp.content[0].text.strip() if resp.content else ""
+    result = _parse(text)
     log_call("score_claude", {"sentence": sentence[:500]}, result)
     return result
 
