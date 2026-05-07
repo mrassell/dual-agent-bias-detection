@@ -64,22 +64,37 @@ def run_basil_evaluation(
         "mae_score_vs_gold_binary": float(mae),
     }
 
-    # Outlet buckets for drift tool
-    bucket_rows: list[dict[str, Any]] = []
+    # Per-outlet metrics and drift buckets
     tmp = test_frame.copy()
     tmp["_score"] = scores
     tmp["_pred"] = y_pred
+    outlet_metrics: dict[str, Any] = {}
+    bucket_rows: list[dict[str, Any]] = []
     for source, grp in tmp.groupby("source", dropna=False):
+        g_true = grp["label"].to_numpy(dtype=np.int64)
+        g_pred = grp["_pred"].to_numpy(dtype=np.int64)
+        g_score = grp["_score"].to_numpy(dtype=np.float64)
+        outlet_metrics[str(source)] = {
+            "sentence_count": len(grp),
+            "gold_positive_rate": float(g_true.mean()),
+            "predicted_positive_rate": float(g_pred.mean()),
+            "accuracy": float(accuracy_score(g_true, g_pred)),
+            "precision": float(precision_score(g_true, g_pred, zero_division=0)),
+            "recall": float(recall_score(g_true, g_pred, zero_division=0)),
+            "f1_macro": float(f1_score(g_true, g_pred, average="macro", zero_division=0)),
+            "mae_score_vs_gold_binary": float(mean_absolute_error(g_true.astype(np.float64), g_score)),
+        }
         bucket_rows.append(
             {
                 "period": str(source),
                 "bias_tag_counts": {
-                    "gold_biased_sentences": int(grp["label"].sum()),
-                    "pred_biased_sentences": int(grp["_pred"].sum()),
-                    "mean_lexical_score": float(grp["_score"].mean()),
+                    "gold_biased_sentences": int(g_true.sum()),
+                    "pred_biased_sentences": int(g_pred.sum()),
+                    "mean_lexical_score": float(g_score.mean()),
                 },
             }
         )
+    out["outlet_metrics"] = outlet_metrics
     out["outlet_buckets_for_drift_tool"] = bucket_rows
 
     # Sample rows (prefer mistakes)
