@@ -93,7 +93,8 @@ def basil_outlet_drift() -> dict[str, Any]:
         }
         return _wrap_log("basil_outlet_drift", arguments, out)
 
-    metrics = run_basil_evaluation(data_dir, max_sentences=None, threshold=0.5)
+    threshold = float(os.environ.get("AUDITOR_THRESHOLD", "0.5"))
+    metrics = run_basil_evaluation(data_dir, max_sentences=None, threshold=threshold)
     buckets = metrics.get("outlet_buckets_for_drift_tool", [])
     buckets = sorted(
         buckets,

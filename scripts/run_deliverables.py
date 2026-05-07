@@ -74,7 +74,8 @@ def main() -> None:
             )
 
     cap = int(os.environ.get("BASIL_EVAL_CAP", "500"))
-    out = evaluate_basil(max_sentences=cap if cap > 0 else 0, threshold=0.5)
+    threshold = float(os.environ.get("AUDITOR_THRESHOLD", "0.5"))
+    out = evaluate_basil(max_sentences=cap if cap > 0 else 0, threshold=threshold)
     _slide(
         out.get("demo_title", "BASIL evaluation"),
         out.get("demo_readout", ""),
