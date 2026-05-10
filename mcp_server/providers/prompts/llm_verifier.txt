@@ -5,6 +5,8 @@ Consider:
 - Does it present information in a one-sided or misleading way?
 - Could a reasonable, neutral reader consider this biased reporting?
 
+Important: Loaded or emotionally charged language counts as bias even if it appears inside quoted speech. Do not downgrade a sentence solely because the biased language belongs to a quote — the presence of that language in the article is itself a bias signal.
+
 Return JSON only — no other text:
 {
   "verified": <true or false>,
