@@ -44,10 +44,16 @@ Full test split: `export BASIL_EVAL_CAP=0`
 
 `from mcp_server.basil_dataset import load_basil_sentences`
 
+## Active model stack
+
+- Auditor: `GPT-4o-mini`
+- Verifier: `claude-haiku-4-5-20251001`
+- Baseline comparison: `roberta-babe-basil-ft`
+
 ## Notebooks and scripts
 
-- `Primary_Auditor_LLM.ipynb` — sentence-level auditor (RoBERTa-BABE) emitting structured bias judgments.
-- `Secondary_Verifier_LLM.ipynb` — NLI verifier (BART-large-MNLI) checking whether the auditor's judgment is supported; aggregates verified document scores.
+- `Primary_Auditor_LLM.ipynb` — sentence-level auditor pipeline (current deployment target: `GPT-4o-mini`) emitting structured bias judgments.
+- `Secondary_Verifier_LLM.ipynb` — verifier pipeline (current deployment target: `claude-haiku-4-5-20251001`) checking whether the auditor's judgment is supported; aggregates verified document scores.
 - `basil_eda.ipynb` — exploratory analysis of the BASIL corpus.
 - `BASIL_Bias_Baseline.ipynb` — older experimental notebook.
 - `proposal_math.py` — scoring functions matching the proposal equations (sentence scoring, article aggregation, revision rate, MAE).

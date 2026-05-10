@@ -2,6 +2,14 @@
 
 This frontend is intentionally independent from the current backend so you can deploy UI now.
 
+## Model configuration represented in UI
+
+- Auditor: `gpt-4o-mini`
+- Verifier: `claude-haiku-4-5-20251001`
+- Baseline comparison: `roberta-babe-basil-ft`
+
+The Analyze tab reflects this stack directly.
+
 ## Local development
 
 ```bash

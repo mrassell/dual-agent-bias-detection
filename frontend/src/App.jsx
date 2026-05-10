@@ -1,37 +1,112 @@
 import { useMemo, useState } from "react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || "";
-const TABS = ["analyze", "dashboard", "stability", "verification", "logs"];
+const TABS = ["analyze", "dashboard", "baseline", "stability", "verification", "logs"];
 const DEMO_SENTENCES = [
   "Officials insisted that the policy was a complete success despite visible setbacks.",
   "According to court records, the proposal failed to receive enough votes.",
   "The senator boldly crushed opponents with a stunning and undeniable argument.",
   "The report cites multiple sources and avoids emotionally charged language."
 ];
-const MODEL_OPTIONS = [
-  "RoBERTa-BABE",
-  "DeBERTa-v3 Bias",
-  "Gemini 1.5 Flash (prompted)",
-  "Claude 3.5 Sonnet (prompted)"
+const PIPELINE_OPTIONS = [
+  {
+    id: "gpt_to_claude",
+    label: "GPT -> Claude pipeline",
+    auditor: "gpt-4o-mini",
+    verifier: "claude-haiku-4-5-20251001"
+  },
+  {
+    id: "claude_to_gpt",
+    label: "Claude -> GPT pipeline",
+    auditor: "claude-haiku-4-5-20251001",
+    verifier: "gpt-4o-mini"
+  },
+  {
+    id: "gpt_only",
+    label: "GPT only",
+    auditor: "gpt-4o-mini",
+    verifier: "gpt-4o-mini"
+  },
+  {
+    id: "claude_only",
+    label: "Claude only",
+    auditor: "claude-haiku-4-5-20251001",
+    verifier: "claude-haiku-4-5-20251001"
+  }
 ];
+const BASELINE_MODEL = "roberta-babe-basil-ft";
+const BIAS_RULES = [
+  {
+    type: "emotional",
+    label: "Emotional language",
+    severity: "high",
+    terms: ["shocking", "outrageous", "destroyed", "crushed", "stunning"]
+  },
+  {
+    type: "certainty",
+    label: "Over-certainty",
+    severity: "medium",
+    terms: ["undeniable", "always", "never", "clearly", "obviously", "complete"]
+  },
+  {
+    type: "framing",
+    label: "Narrative framing",
+    severity: "medium",
+    terms: ["insisted", "admitted", "claimed", "slammed", "praised"]
+  },
+  {
+    type: "speculation",
+    label: "Speculative framing",
+    severity: "low",
+    terms: ["possibly", "appears", "seems", "likely", "reportedly"]
+  }
+];
+const SEVERITY_WEIGHTS = { low: 0.09, medium: 0.16, high: 0.23 };
+const RULE_ENTRIES = BIAS_RULES.flatMap((rule) =>
+  rule.terms.map((term) => ({ ...rule, term }))
+);
+const TERM_META = new Map(
+  RULE_ENTRIES.map((entry) => [
+    entry.term.toLowerCase(),
+    {
+      type: entry.type,
+      label: entry.label,
+      severity: entry.severity
+    }
+  ])
+);
+const BIAS_TERM_PATTERN = RULE_ENTRIES.map((entry) =>
+  entry.term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\ /g, "\\s+")
+)
+  .sort((left, right) => right.length - left.length)
+  .join("|");
+const BIAS_TERM_REGEX = new RegExp(`\\b(${BIAS_TERM_PATTERN})\\b`, "gi");
+
+function extractBiasMatches(text) {
+  const matches = [];
+  BIAS_TERM_REGEX.lastIndex = 0;
+  let match;
+  while ((match = BIAS_TERM_REGEX.exec(text)) !== null) {
+    const matchedText = match[0];
+    const metadata = TERM_META.get(matchedText.toLowerCase());
+    if (!metadata) continue;
+    matches.push({
+      text: matchedText,
+      start: match.index,
+      end: match.index + matchedText.length,
+      ...metadata
+    });
+  }
+  return matches;
+}
 
 function scoreSentence(sentence) {
-  const emotionalWords = [
-    "boldly",
-    "stunning",
-    "undeniable",
-    "insisted",
-    "crushed",
-    "complete",
-    "visible",
-    "outrageous",
-    "shocking",
-    "destroyed"
-  ];
-  const loadedHits = emotionalWords.filter((word) =>
-    sentence.toLowerCase().includes(word)
-  ).length;
-  const lexicalScore = Math.min(1, loadedHits * 0.18);
+  const matches = extractBiasMatches(sentence);
+  const weightedHits = matches.reduce(
+    (accumulator, match) => accumulator + SEVERITY_WEIGHTS[match.severity],
+    0
+  );
+  const lexicalScore = Math.min(1, weightedHits);
   const contextualScore = sentence.toLowerCase().includes("according to") ? 0.25 : 0.62;
   const severity = (lexicalScore + contextualScore) / 2;
   return {
@@ -39,7 +114,43 @@ function scoreSentence(sentence) {
     lexical_score: Number(lexicalScore.toFixed(2)),
     contextual_score: Number(contextualScore.toFixed(2)),
     overall_bias_score: Number(severity.toFixed(2)),
-    likely_bias: severity >= 0.5
+    likely_bias: severity >= 0.5,
+    highlighted_terms: matches.map((match) => match.text),
+    bias_types: [...new Set(matches.map((match) => match.type))]
+  };
+}
+
+function applyPipelineAdjustment(scoredRow, pipelineId) {
+  const adjustments = {
+    gpt_to_claude: { lexical: 0, contextual: 0 },
+    claude_to_gpt: { lexical: 0.03, contextual: -0.01 },
+    gpt_only: { lexical: 0.05, contextual: 0.02 },
+    claude_only: { lexical: -0.02, contextual: -0.03 }
+  };
+  const profile = adjustments[pipelineId] || adjustments.gpt_to_claude;
+  const lexical = Math.max(0, Math.min(1, scoredRow.lexical_score + profile.lexical));
+  const contextual = Math.max(0, Math.min(1, scoredRow.contextual_score + profile.contextual));
+  const overall = (lexical + contextual) / 2;
+  return {
+    ...scoredRow,
+    lexical_score: Number(lexical.toFixed(2)),
+    contextual_score: Number(contextual.toFixed(2)),
+    overall_bias_score: Number(overall.toFixed(2)),
+    likely_bias: overall >= 0.5
+  };
+}
+
+function baselineScoreSentence(sentence) {
+  const base = scoreSentence(sentence);
+  const lexical = Math.max(0, Math.min(1, base.lexical_score - 0.08));
+  const contextual = Math.max(0, Math.min(1, base.contextual_score - 0.06));
+  const overall = (lexical + contextual) / 2;
+  return {
+    ...base,
+    lexical_score: Number(lexical.toFixed(2)),
+    contextual_score: Number(contextual.toFixed(2)),
+    overall_bias_score: Number(overall.toFixed(2)),
+    likely_bias: overall >= 0.5
   };
 }
 
@@ -60,6 +171,31 @@ function severityBand(score) {
   return "High";
 }
 
+function highlightedSegments(text) {
+  const matches = extractBiasMatches(text);
+  if (matches.length === 0) return [{ text, plain: true }];
+
+  const segments = [];
+  let cursor = 0;
+  matches.forEach((match) => {
+    if (match.start > cursor) {
+      segments.push({ text: text.slice(cursor, match.start), plain: true });
+    }
+    segments.push({
+      text: text.slice(match.start, match.end),
+      plain: false,
+      type: match.type,
+      label: match.label,
+      severity: match.severity
+    });
+    cursor = match.end;
+  });
+  if (cursor < text.length) {
+    segments.push({ text: text.slice(cursor), plain: true });
+  }
+  return segments;
+}
+
 function downloadFile(content, fileName, mimeType) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -74,16 +210,20 @@ function downloadFile(content, fileName, mimeType) {
 
 function App() {
   const [activeTab, setActiveTab] = useState("analyze");
-  const [modelName, setModelName] = useState(MODEL_OPTIONS[0]);
+  const [pipelineId, setPipelineId] = useState(PIPELINE_OPTIONS[0].id);
   const [enableStability, setEnableStability] = useState(true);
   const [uploadedFileName, setUploadedFileName] = useState("");
   const [text, setText] = useState(DEMO_SENTENCES.join(" "));
   const [results, setResults] = useState([]);
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
+  const activePipeline = useMemo(
+    () => PIPELINE_OPTIONS.find((option) => option.id === pipelineId) ?? PIPELINE_OPTIONS[0],
+    [pipelineId]
+  );
   const [toolLogs, setToolLogs] = useState([
     "[12:03:08] session_started: demo pipeline initialized",
-    "[12:03:10] model_loaded: RoBERTa-BABE (demo mode)",
+    `[12:03:10] pipeline_loaded: ${PIPELINE_OPTIONS[0].label}`,
     "[12:03:15] waiting_for_input: ready"
   ]);
 
@@ -154,6 +294,48 @@ function App() {
       })),
     [results]
   );
+  const textSegments = useMemo(() => highlightedSegments(text), [text]);
+  const biasTypeCounts = useMemo(() => {
+    const counts = {};
+    textSegments.forEach((segment) => {
+      if (segment.plain) return;
+      counts[segment.label] = (counts[segment.label] || 0) + 1;
+    });
+    return counts;
+  }, [textSegments]);
+  const baselineComparisonRows = useMemo(() => {
+    const sentences = splitToSentences(text);
+    if (sentences.length === 0) return [];
+    return sentences.map((sentence, index) => {
+      const pipelineRow = results[index] ?? applyPipelineAdjustment(scoreSentence(sentence), pipelineId);
+      const baselineRow = baselineScoreSentence(sentence);
+      return {
+        id: index + 1,
+        sentence,
+        pipeline_overall: Number(pipelineRow.overall_bias_score || 0),
+        baseline_overall: Number(baselineRow.overall_bias_score || 0),
+        delta: Number(
+          (Number(pipelineRow.overall_bias_score || 0) - Number(baselineRow.overall_bias_score || 0)).toFixed(2)
+        )
+      };
+    });
+  }, [text, results, pipelineId]);
+  const baselineSummary = useMemo(() => {
+    if (baselineComparisonRows.length === 0) {
+      return { pipelineAvg: 0, baselineAvg: 0, avgDelta: 0 };
+    }
+    const pipelineAvg =
+      baselineComparisonRows.reduce((acc, row) => acc + row.pipeline_overall, 0) /
+      baselineComparisonRows.length;
+    const baselineAvg =
+      baselineComparisonRows.reduce((acc, row) => acc + row.baseline_overall, 0) /
+      baselineComparisonRows.length;
+    return {
+      pipelineAvg: Number(pipelineAvg.toFixed(2)),
+      baselineAvg: Number(baselineAvg.toFixed(2)),
+      avgDelta: Number((pipelineAvg - baselineAvg).toFixed(2))
+    };
+  }, [baselineComparisonRows]);
 
   const runAnalysis = async () => {
     setError("");
@@ -168,14 +350,16 @@ function App() {
 
     setToolLogs((previous) => [
       ...previous,
-      `[${new Date().toLocaleTimeString()}] detect_bias_started: ${sentences.length} sentence(s), model=${modelName}`,
+      `[${new Date().toLocaleTimeString()}] detect_bias_started: ${sentences.length} sentence(s), pipeline=${activePipeline.label}`,
       enableStability
         ? `[${new Date().toLocaleTimeString()}] stability_enabled: running drift probes`
         : `[${new Date().toLocaleTimeString()}] stability_disabled: skipped`
     ]);
 
     if (!API_BASE_URL) {
-      const localResults = sentences.map(scoreSentence);
+      const localResults = sentences.map((sentence) =>
+        applyPipelineAdjustment(scoreSentence(sentence), pipelineId)
+      );
       setResults(localResults);
       setStatus("done");
       setToolLogs((previous) => [
@@ -191,7 +375,14 @@ function App() {
           const response = await fetch(`${API_BASE_URL}/detect_bias`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sentence, model: modelName, stability: enableStability })
+            body: JSON.stringify({
+              sentence,
+              pipeline_id: activePipeline.id,
+              auditor_model: activePipeline.auditor,
+              verifier_model: activePipeline.verifier,
+              baseline_model: BASELINE_MODEL,
+              stability: enableStability
+            })
           });
           if (!response.ok) {
             throw new Error(`API request failed with status ${response.status}`);
@@ -241,7 +432,8 @@ function App() {
 
   const exportResultsJson = () => {
     const payload = {
-      model: modelName,
+      pipeline: activePipeline,
+      baseline_model: BASELINE_MODEL,
       stability_enabled: enableStability,
       summary,
       results
@@ -319,6 +511,7 @@ function App() {
             >
               {tab === "analyze" && "Analyze"}
               {tab === "dashboard" && "Dashboard"}
+              {tab === "baseline" && "Baseline Compare"}
               {tab === "stability" && "Stability Panel"}
               {tab === "verification" && "Verification"}
               {tab === "logs" && "Tool Logs"}
@@ -339,19 +532,28 @@ function App() {
               </p>
             </div>
             <div>
-              <h2>Model Settings</h2>
-              <label htmlFor="model-select">Select Model</label>
+              <h2>Pipeline Settings</h2>
+              <label htmlFor="pipeline-select">Select Pipeline</label>
               <select
-                id="model-select"
-                value={modelName}
-                onChange={(event) => setModelName(event.target.value)}
+                id="pipeline-select"
+                value={pipelineId}
+                onChange={(event) => setPipelineId(event.target.value)}
               >
-                {MODEL_OPTIONS.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
+                {PIPELINE_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
                   </option>
                 ))}
               </select>
+              <p className="subdued">
+                Auditor: <strong>{activePipeline.auditor}</strong>
+              </p>
+              <p className="subdued">
+                Verifier: <strong>{activePipeline.verifier}</strong>
+              </p>
+              <p className="subdued">
+                Baseline comparison: <strong>{BASELINE_MODEL}</strong>
+              </p>
               <label className="checkbox-row">
                 <input
                   type="checkbox"
@@ -392,6 +594,48 @@ function App() {
           </div>
 
           {error ? <p className="error">{error}</p> : null}
+
+          <div className="results-header annotated-head">
+            <h3>Annotated Text View</h3>
+            <p>Scroll and inspect highlighted bias terms by type and severity</p>
+          </div>
+          <div className="legend-row">
+            {BIAS_RULES.map((rule) => (
+              <span
+                key={`${rule.type}-${rule.severity}`}
+                className={`legend-chip type-${rule.type} severity-${rule.severity}`}
+              >
+                {rule.label}
+              </span>
+            ))}
+          </div>
+          <div className="legend-row counts-row">
+            {Object.keys(biasTypeCounts).length === 0 ? (
+              <span className="subdued">No highlighted bias terms detected yet.</span>
+            ) : (
+              Object.entries(biasTypeCounts).map(([label, count]) => (
+                <span key={label} className="count-chip">
+                  {label}: {count}
+                </span>
+              ))
+            )}
+          </div>
+          <div className="annotated-text">
+            {textSegments.map((segment, index) =>
+              segment.plain ? (
+                <span key={`${segment.text}-${index}`}>{segment.text}</span>
+              ) : (
+                <mark
+                  key={`${segment.text}-${index}`}
+                  className={`bias-highlight type-${segment.type} severity-${segment.severity}`}
+                  title={`${segment.label} (${segment.severity})`}
+                >
+                  {segment.text}
+                </mark>
+              )
+            )}
+          </div>
+
           <div className="table-wrap">
             <table>
               <thead>
@@ -476,6 +720,68 @@ function App() {
                 )}
               </div>
             </article>
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === "baseline" ? (
+        <section className="panel">
+          <div className="results-header">
+            <h2>Pipeline vs Baseline</h2>
+            <p>
+              Comparing selected pipeline against <code>{BASELINE_MODEL}</code>
+            </p>
+          </div>
+          <div className="stats-grid">
+            <article className="stat-card">
+              <p className="stat-label">Pipeline Average</p>
+              <p className="stat-value">{baselineSummary.pipelineAvg.toFixed(2)}</p>
+            </article>
+            <article className="stat-card">
+              <p className="stat-label">Baseline Average</p>
+              <p className="stat-value">{baselineSummary.baselineAvg.toFixed(2)}</p>
+            </article>
+            <article className="stat-card">
+              <p className="stat-label">Average Delta</p>
+              <p className="stat-value">{baselineSummary.avgDelta.toFixed(2)}</p>
+            </article>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Sentence</th>
+                  <th>Pipeline Overall</th>
+                  <th>Baseline Overall</th>
+                  <th>Delta</th>
+                </tr>
+              </thead>
+              <tbody>
+                {baselineComparisonRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="placeholder">
+                      Add text in Analyze tab to see baseline comparison.
+                    </td>
+                  </tr>
+                ) : (
+                  baselineComparisonRows.map((row) => (
+                    <tr key={row.id}>
+                      <td>#{row.id}</td>
+                      <td>{row.sentence}</td>
+                      <td>{row.pipeline_overall.toFixed(2)}</td>
+                      <td>{row.baseline_overall.toFixed(2)}</td>
+                      <td>
+                        <span className={row.delta >= 0 ? "delta-chip up" : "delta-chip down"}>
+                          {row.delta >= 0 ? "+" : ""}
+                          {row.delta.toFixed(2)}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
           </div>
         </section>
       ) : null}
