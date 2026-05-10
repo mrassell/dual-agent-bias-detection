@@ -189,14 +189,79 @@ button:disabled {
   font-size: 0.9rem;
 }
 
-.baseline-model {
-  margin-top: -0.15rem;
-  margin-bottom: 0.5rem;
-  padding: 0.45rem 0.58rem;
+.annotated-head {
+  margin-top: 1rem;
+}
+
+.legend-row {
+  margin-top: 0.5rem;
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.legend-chip,
+.count-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.78rem;
+  border: 1px solid #425893;
+  color: #d9e4ff;
+}
+
+.count-chip {
+  background: rgba(64, 88, 148, 0.35);
+}
+
+.annotated-text {
+  margin-top: 0.6rem;
+  max-height: 240px;
+  overflow: auto;
   border-radius: 10px;
-  border: 1px solid #3b4a77;
-  background: #0f1730;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  border: 1px solid #37508e;
+  background: #0d1733;
+  padding: 0.75rem;
+  line-height: 1.8;
+  white-space: pre-wrap;
+}
+
+.bias-highlight {
+  border-radius: 6px;
+  padding: 0.06rem 0.12rem;
+  color: #f8fbff;
+}
+
+.type-emotional {
+  --bias-color: 255, 92, 87;
+}
+
+.type-certainty {
+  --bias-color: 180, 99, 255;
+}
+
+.type-framing {
+  --bias-color: 72, 166, 255;
+}
+
+.type-speculation {
+  --bias-color: 255, 198, 59;
+}
+
+.severity-low {
+  background: rgba(var(--bias-color), 0.2);
+  box-shadow: inset 0 -1px 0 rgba(var(--bias-color), 0.62);
+}
+
+.severity-medium {
+  background: rgba(var(--bias-color), 0.3);
+  box-shadow: inset 0 -2px 0 rgba(var(--bias-color), 0.78);
+}
+
+.severity-high {
+  background: rgba(var(--bias-color), 0.42);
+  box-shadow: inset 0 -2px 0 rgba(var(--bias-color), 0.96);
 }
 
 .results-header {
@@ -293,6 +358,26 @@ th {
   background: rgba(230, 95, 115, 0.16);
   border: 1px solid #ea6b80;
   color: #ffb9c4;
+}
+
+.delta-chip {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.delta-chip.up {
+  background: rgba(92, 188, 140, 0.2);
+  border: 1px solid #4ec99d;
+  color: #9deccf;
+}
+
+.delta-chip.down {
+  background: rgba(233, 118, 143, 0.18);
+  border: 1px solid #ea6f87;
+  color: #ffc4cf;
 }
 
 .dashboard-grid {
