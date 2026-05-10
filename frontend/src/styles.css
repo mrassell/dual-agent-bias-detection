@@ -1,0 +1,361 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  background: #0e1425;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at top, #14203d, #0a0f1d 58%);
+  color: #e7ebff;
+  min-height: 100vh;
+}
+
+.page {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 2rem 1rem 3rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.hero,
+.panel {
+  background: rgba(15, 22, 42, 0.8);
+  border: 1px solid rgba(151, 170, 255, 0.22);
+  border-radius: 14px;
+  padding: 1rem;
+  backdrop-filter: blur(6px);
+}
+
+.hero-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0 0 0.45rem;
+}
+
+p {
+  margin: 0.3rem 0;
+}
+
+.mode-pill {
+  margin-top: 0.5rem;
+  display: inline-block;
+  border-radius: 999px;
+  background: #22305d;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.85rem;
+  border: 1px solid #475b9f;
+}
+
+.stats-grid {
+  margin-top: 1rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.75rem;
+}
+
+.stat-card {
+  background: rgba(29, 43, 85, 0.72);
+  border: 1px solid #465b9d;
+  border-radius: 12px;
+  padding: 0.7rem 0.8rem;
+}
+
+.stat-label {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #c1ccf8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.stat-value {
+  margin: 0.35rem 0 0;
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: #f0f4ff;
+}
+
+label {
+  font-weight: 700;
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+input[type="file"],
+select {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid #3b4a77;
+  background: #0f1730;
+  color: #eef2ff;
+  padding: 0.58rem;
+  font-size: 0.92rem;
+}
+
+textarea {
+  width: 100%;
+  min-height: 180px;
+  border-radius: 10px;
+  border: 1px solid #3b4a77;
+  background: #0f1730;
+  color: #eef2ff;
+  padding: 0.75rem;
+  font-size: 0.95rem;
+}
+
+.actions {
+  margin-top: 0.8rem;
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.export-actions {
+  margin-top: 0.6rem;
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+button {
+  border: none;
+  border-radius: 10px;
+  padding: 0.6rem 1rem;
+  color: #fff;
+  background: linear-gradient(135deg, #4b6dff, #7f4dff);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.tab-btn {
+  background: #111a33;
+  border: 1px solid #3f5086;
+  color: #dce5ff;
+}
+
+.tab-btn.active {
+  background: linear-gradient(135deg, #4b6dff, #7f4dff);
+  border-color: #8098ff;
+}
+
+.secondary-btn {
+  background: linear-gradient(135deg, #2f8fff, #2763dd);
+}
+
+.ghost-btn {
+  background: transparent;
+  border: 1px solid #4f639f;
+  color: #d6e0ff;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error {
+  color: #ff95a2;
+  margin-top: 0.75rem;
+}
+
+.subdued {
+  color: #a9b8e9;
+  font-size: 0.9rem;
+}
+
+.results-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.panel-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  margin-bottom: 1rem;
+}
+
+.checkbox-row {
+  margin-top: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.92rem;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  margin-top: 0.75rem;
+}
+
+.meter-track {
+  width: 100%;
+  height: 14px;
+  border-radius: 999px;
+  background: #15213f;
+  border: 1px solid #384b84;
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #2bc4a1, #f6a64d, #ff5e73);
+  border-radius: 999px;
+  transition: width 250ms ease;
+}
+
+.meter-footer {
+  margin-top: 0.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #b9c7f4;
+  font-size: 0.85rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  border-bottom: 1px solid #33426e;
+  padding: 0.62rem 0.5rem;
+  font-size: 0.92rem;
+  vertical-align: top;
+}
+
+th {
+  font-size: 0.85rem;
+  color: #bfcaff;
+}
+
+.placeholder {
+  color: #9eacd9;
+}
+
+.status-chip {
+  display: inline-block;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 0.22rem 0.55rem;
+}
+
+.status-chip.safe {
+  background: rgba(52, 178, 141, 0.2);
+  border: 1px solid #31b08b;
+  color: #8ce9cd;
+}
+
+.status-chip.danger {
+  background: rgba(230, 95, 115, 0.16);
+  border: 1px solid #ea6b80;
+  color: #ffb9c4;
+}
+
+.dashboard-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+
+.card {
+  background: rgba(23, 35, 70, 0.65);
+  border: 1px solid #3f5394;
+  border-radius: 12px;
+  padding: 0.9rem;
+}
+
+.bar-row,
+.timeline-row {
+  display: grid;
+  grid-template-columns: 65px 1fr 46px;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.55rem;
+  font-size: 0.9rem;
+}
+
+.bar-track {
+  width: 100%;
+  height: 11px;
+  border-radius: 999px;
+  background: #14213e;
+  border: 1px solid #35497d;
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3bb6ff, #6288ff, #b06bff);
+}
+
+.bar-fill.drift {
+  background: linear-gradient(90deg, #41d9a2, #f6bc58, #ff7a8c);
+}
+
+.heatmap-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(44px, 1fr));
+  gap: 0.45rem;
+}
+
+.heat-cell {
+  min-height: 42px;
+  border-radius: 8px;
+  border: 1px solid #7d4e9f;
+  background: #d35b9d;
+  display: grid;
+  place-items: center;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #f6e8ff;
+}
+
+.timeline {
+  margin-top: 0.5rem;
+}
+
+.log-viewer {
+  margin-top: 0.5rem;
+  border: 1px solid #31477d;
+  border-radius: 10px;
+  background: #0a1124;
+  padding: 0.75rem;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.log-viewer p {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.82rem;
+  margin: 0 0 0.45rem;
+  color: #b7cbff;
+}

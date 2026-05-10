@@ -6,3 +6,8 @@ __pycache__/
 
 # Large model checkpoints — too big for git
 outputs/roberta-babe-basil-ft/
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.env
