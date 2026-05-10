@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Dual-agent LLM bias detection pipeline.
+"""Dual-agent LLM bias detection pipeline — configurable model setup.
 
-Agent 1 — Auditor  (GPT-4o-mini):   scores every sentence for bias (0–1).
-Agent 2 — Verifier (Claude-haiku):  verifies auditor-positive sentences;
-                                     downgrades if it finds no real bias.
+Supports four pipeline modes via PIPELINE_MODE env var:
+
+    gpt-only      GPT-4o-mini scores every sentence, no verifier
+    claude-only   Claude-haiku scores every sentence, no verifier
+    gpt-claude    GPT auditor → Claude verifier  (default)
+    claude-gpt    Claude auditor → GPT verifier  (flipped)
 
 The two agents are coordinated through the same MCP audit infrastructure,
 demonstrating that provider-swapping requires zero tool-code changes.
@@ -16,15 +19,15 @@ outputs/llm_pipeline_metrics.json
 Usage
 -----
     OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... \\
-    BASIL_DATA_DIR=... python scripts/run_llm_pipeline.py
+    BASIL_DATA_DIR=... PIPELINE_MODE=gpt-claude python scripts/run_llm_pipeline.py
 
 Env vars
 --------
+    PIPELINE_MODE       gpt-only | claude-only | gpt-claude | claude-gpt (default: gpt-claude)
     BASIL_DATA_DIR      path to BASIL *.json articles
-    SAMPLE_SIZE         sentences per outlet, default 67 (~201 total)
-                        set to 0 to run the full test split
+    SAMPLE_SIZE         sentences per outlet, default 67 (~201 total); 0 = full test split
     AUDITOR_THRESHOLD   decision threshold (falls back to threshold_choice.json)
-    VERIFY_THRESHOLD    min confidence for Claude to confirm bias (default 0.5)
+    VERIFY_THRESHOLD    min confidence for verifier to confirm bias (default 0.5)
 """
 
 from __future__ import annotations
@@ -62,6 +65,13 @@ CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 
 SAMPLE_PER_OUTLET = int(os.environ.get("SAMPLE_SIZE", "67"))
 VERIFY_THRESHOLD  = float(os.environ.get("VERIFY_THRESHOLD", "0.5"))
+
+# Pipeline mode — controls which model is auditor and which is verifier
+VALID_MODES = {"gpt-only", "claude-only", "gpt-claude", "claude-gpt"}
+PIPELINE_MODE = os.environ.get("PIPELINE_MODE", "gpt-claude").strip().lower()
+if PIPELINE_MODE not in VALID_MODES:
+    print(f"ERROR: PIPELINE_MODE must be one of {VALID_MODES}", file=sys.stderr)
+    sys.exit(1)
 
 # ------------------------------------------------------------------ #
 # Prompts                                                             #
@@ -122,58 +132,79 @@ def _extract_json(raw: str) -> dict:
 
 
 # ------------------------------------------------------------------ #
-# Agent 1 — Auditor (GPT-4o-mini)                                    #
+# Model callers — one per provider                                    #
 # ------------------------------------------------------------------ #
 
-def audit(sentence: str) -> dict:
-    """Score a sentence for bias. Returns bias_score, bias_type, reasoning."""
+def _call_gpt(sentence: str, prompt: str, role: str) -> dict:
+    """Call GPT-4o-mini with the given system prompt."""
     client = openai_sdk.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
     resp = client.chat.completions.create(
         model=GPT_MODEL,
         max_tokens=300,
         response_format={"type": "json_object"},
         messages=[
-            {"role": "system", "content": AUDITOR_PROMPT},
+            {"role": "system", "content": prompt},
             {"role": "user",   "content": f"Sentence: {sentence}"},
         ],
     )
     raw = resp.choices[0].message.content.strip()
     data = _extract_json(raw)
-    result = {
-        "bias_score": float(data.get("bias_score", 0.5)),
-        "bias_type":  str(data.get("bias_type", "none")),
-        "reasoning":  str(data.get("reasoning", "")),
-    }
-    log_call("audit_gpt", {"sentence": sentence[:500]}, result)
+    result = {k: (float(v) if isinstance(v, (int, float)) else v)
+              for k, v in data.items()}
+    log_call(f"{role}_gpt", {"sentence": sentence[:500]}, result)
     return result
 
 
-# ------------------------------------------------------------------ #
-# Agent 2 — Verifier (Claude-haiku)                                  #
-# ------------------------------------------------------------------ #
-
-def verify(sentence: str, auditor_reasoning: str) -> dict:
-    """Verify an auditor-positive sentence. Returns verified, confidence, reasoning."""
+def _call_claude(sentence: str, prompt: str, role: str,
+                 extra_context: str = "") -> dict:
+    """Call Claude-haiku with the given system prompt."""
     client = anthropic_sdk.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    user_msg = (
-        f"Sentence: {sentence}\n\n"
-        f"Auditor note: {auditor_reasoning}"
-    )
+    user_content = f"Sentence: {sentence}"
+    if extra_context:
+        user_content += f"\n\n{extra_context}"
     resp = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=300,
-        system=VERIFIER_PROMPT,
-        messages=[{"role": "user", "content": user_msg}],
+        system=prompt,
+        messages=[{"role": "user", "content": user_content}],
     )
-    raw = resp.content[0].text.strip() if resp.content else ""
+    raw = resp.content[0].text.strip() if resp.content else "{}"
     data = _extract_json(raw)
-    result = {
-        "verified":   bool(data.get("verified", False)),
-        "confidence": float(data.get("confidence", 0.0)),
-        "reasoning":  str(data.get("reasoning", "")),
-    }
-    log_call("verify_claude", {"sentence": sentence[:500]}, result)
+    result = {k: (float(v) if isinstance(v, (int, float)) else v)
+              for k, v in data.items()}
+    log_call(f"{role}_claude", {"sentence": sentence[:500]}, result)
     return result
+
+
+# ------------------------------------------------------------------ #
+# Pipeline-mode dispatch                                              #
+# ------------------------------------------------------------------ #
+
+def _resolve_pipeline():
+    """Return (auditor_fn, verifier_fn_or_None, auditor_label, verifier_label)."""
+    if PIPELINE_MODE == "gpt-only":
+        audit_fn  = lambda s: _call_gpt(s, AUDITOR_PROMPT, "audit")
+        verify_fn = None
+        return audit_fn, verify_fn, GPT_MODEL, "none"
+
+    if PIPELINE_MODE == "claude-only":
+        audit_fn  = lambda s: _call_claude(s, AUDITOR_PROMPT, "audit")
+        verify_fn = None
+        return audit_fn, verify_fn, CLAUDE_MODEL, "none"
+
+    if PIPELINE_MODE == "gpt-claude":
+        audit_fn  = lambda s:       _call_gpt(s, AUDITOR_PROMPT, "audit")
+        verify_fn = lambda s, note: _call_claude(s, VERIFIER_PROMPT, "verify",
+                                                  f"Auditor note: {note}")
+        return audit_fn, verify_fn, GPT_MODEL, CLAUDE_MODEL
+
+    if PIPELINE_MODE == "claude-gpt":
+        audit_fn  = lambda s:       _call_claude(s, AUDITOR_PROMPT, "audit")
+        verify_fn = lambda s, note: _call_gpt(s, VERIFIER_PROMPT + \
+                                               f"\n\nAuditor note: {note}", "verify")
+        return audit_fn, verify_fn, CLAUDE_MODEL, GPT_MODEL
+
+    raise ValueError(f"Unknown PIPELINE_MODE: {PIPELINE_MODE}")
 
 
 # ------------------------------------------------------------------ #
@@ -199,9 +230,16 @@ def _metrics(y_true, y_pred, label: str) -> dict:
 # ------------------------------------------------------------------ #
 
 def main() -> None:
-    missing = [k for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY") if not os.environ.get(k)]
+    # Validate required API keys based on mode
+    needed = []
+    if PIPELINE_MODE in ("gpt-only", "gpt-claude", "claude-gpt"):
+        needed.append("OPENAI_API_KEY")
+    if PIPELINE_MODE in ("claude-only", "gpt-claude", "claude-gpt"):
+        needed.append("ANTHROPIC_API_KEY")
+    missing = [k for k in needed if not os.environ.get(k)]
     if missing:
-        print(f"ERROR: missing env vars: {', '.join(missing)}", file=sys.stderr)
+        print(f"ERROR: missing env vars for mode '{PIPELINE_MODE}': {', '.join(missing)}",
+              file=sys.stderr)
         sys.exit(1)
 
     init_db()
@@ -214,6 +252,7 @@ def main() -> None:
         sys.exit(1)
 
     threshold = _load_threshold()
+    audit_fn, verify_fn, auditor_label, verifier_label = _resolve_pipeline()
 
     import pandas as pd
     print(f"Loading BASIL from {data_dir} ...")
@@ -231,10 +270,11 @@ def main() -> None:
     else:
         sample = test
 
+    print(f"Mode      : {PIPELINE_MODE}")
+    print(f"Auditor   : {auditor_label}")
+    print(f"Verifier  : {verifier_label}")
     print(f"Sample    : {len(sample)} sentences — {dict(sample['source'].value_counts())}")
-    print(f"Threshold : {threshold}  (auditor positive → Claude verification)")
-    print(f"Auditor   : {GPT_MODEL}")
-    print(f"Verifier  : {CLAUDE_MODEL}\n")
+    print(f"Threshold : {threshold}\n")
 
     rows: list[dict] = []
     auditor_only_preds: list[int] = []
@@ -252,33 +292,32 @@ def main() -> None:
 
         # --- Agent 1: Auditor ---
         try:
-            aud = audit(sentence)
+            aud = audit_fn(sentence)
         except Exception as e:
             print(f"  [warn] Auditor error at {i}: {e}")
             aud = {"bias_score": 0.5, "bias_type": "none", "reasoning": str(e)}
         time.sleep(0.1)
 
-        aud_score = aud["bias_score"]
+        aud_score = float(aud.get("bias_score", 0.5))
         aud_pred  = int(aud_score >= threshold)
 
-        # --- Agent 2: Verifier (only if auditor says biased) ---
-        ver_verdict   = "skipped"
-        ver_verified  = None
+        # --- Agent 2: Verifier (only if auditor says biased and verifier exists) ---
+        ver_verdict    = "skipped"
+        ver_verified   = None
         ver_confidence = None
         ver_reasoning  = ""
-        final_pred    = aud_pred
+        final_pred     = aud_pred
 
-        if aud_pred == 1:
+        if aud_pred == 1 and verify_fn is not None:
             verifier_calls += 1
             try:
-                ver = verify(sentence, aud["reasoning"])
-                ver_verified   = ver["verified"]
-                ver_confidence = ver["confidence"]
-                ver_reasoning  = ver["reasoning"]
+                ver = verify_fn(sentence, aud.get("reasoning", ""))
+                ver_verified   = bool(ver.get("verified", False))
+                ver_confidence = float(ver.get("confidence", 0.0))
+                ver_reasoning  = str(ver.get("reasoning", ""))
 
-                # Downgrade if Claude not confident enough that bias exists
                 if not ver_verified or ver_confidence < VERIFY_THRESHOLD:
-                    final_pred = 0
+                    final_pred  = 0
                     ver_verdict = "downgraded"
                     verifier_downgrades += 1
                 else:
@@ -314,8 +353,9 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     print("\nComputing metrics ...")
 
-    aud_metrics   = _metrics(gold_labels, auditor_only_preds, "auditor_only (GPT)")
-    final_metrics = _metrics(gold_labels, final_preds,        "pipeline (GPT→Claude)")
+    pipeline_label = PIPELINE_MODE if verify_fn else f"{PIPELINE_MODE} (no verifier)"
+    aud_metrics   = _metrics(gold_labels, auditor_only_preds, f"auditor_only ({auditor_label})")
+    final_metrics = _metrics(gold_labels, final_preds,        f"pipeline ({pipeline_label})")
 
     revision_rate = verifier_downgrades / len(rows)
 
@@ -334,8 +374,9 @@ def main() -> None:
         }
 
     full_metrics = {
-        "auditor_model":    GPT_MODEL,
-        "verifier_model":   CLAUDE_MODEL,
+        "pipeline_mode":    PIPELINE_MODE,
+        "auditor_model":    auditor_label,
+        "verifier_model":   verifier_label,
         "threshold":        threshold,
         "verify_threshold": VERIFY_THRESHOLD,
         "sample_size":      len(rows),
@@ -367,12 +408,13 @@ def main() -> None:
     print("\n" + "=" * 60)
     print("DUAL-AGENT LLM PIPELINE SUMMARY")
     print("=" * 60)
-    print(f"Auditor  : {GPT_MODEL}")
-    print(f"Verifier : {CLAUDE_MODEL}")
+    print(f"Mode     : {PIPELINE_MODE}")
+    print(f"Auditor  : {auditor_label}")
+    print(f"Verifier : {verifier_label}")
     print(f"Sample   : {len(rows)} sentences (stratified by outlet)")
     print(f"Threshold: {threshold}")
     print()
-    print(f"{'Metric':<20} {'Auditor-only':>14} {'GPT→Claude':>14}")
+    print(f"{'Metric':<20} {'Auditor-only':>14} {'Pipeline':>14}")
     print("-" * 50)
     for key in ["accuracy", "precision", "recall", "f1_macro"]:
         a = aud_metrics[key]
