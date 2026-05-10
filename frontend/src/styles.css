@@ -360,6 +360,18 @@ th {
   color: #ffb9c4;
 }
 
+.status-chip.warn {
+  background: rgba(246, 186, 58, 0.15);
+  border: 1px solid #d4a017;
+  color: #ffd97a;
+}
+
+.status-chip.muted {
+  background: rgba(120, 130, 170, 0.15);
+  border: 1px solid #6272a4;
+  color: #bbc6f0;
+}
+
 .delta-chip {
   display: inline-block;
   border-radius: 999px;

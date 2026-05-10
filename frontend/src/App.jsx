@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || "";
-const TABS = ["analyze", "dashboard", "baseline", "stability", "verification", "logs"];
+const TABS = ["analyze", "dashboard", "baseline", "verification", "logs"];
 const DEMO_SENTENCES = [
   "Officials insisted that the policy was a complete success despite visible setbacks.",
   "According to court records, the proposal failed to receive enough votes.",
@@ -218,7 +218,6 @@ function downloadFile(content, fileName, mimeType) {
 function App() {
   const [activeTab, setActiveTab] = useState("analyze");
   const [pipelineId, setPipelineId] = useState(PIPELINE_OPTIONS[0].id);
-  const [enableStability, setEnableStability] = useState(true);
   const [uploadedFileName, setUploadedFileName] = useState("");
   const [text, setText] = useState(DEMO_SENTENCES.join(" "));
   const [results, setResults] = useState([]);
@@ -281,27 +280,47 @@ function App() {
     return rows;
   }, [results]);
 
-  const stabilitySeries = useMemo(() => {
-    const base = summary.avgOverall || 0.25;
-    return [0, 1, 2, 3, 4, 5].map((point) => ({
-      run: point + 1,
-      drift: Number(Math.max(0, Math.min(1, base + (point - 2) * 0.06)).toFixed(2))
-    }));
-  }, [summary.avgOverall]);
-
   const verificationRows = useMemo(
     () =>
-      results.slice(0, 8).map((row, index) => ({
-        id: index + 1,
-        claim: row.sentence,
-        support_confidence: Number(
-          Math.max(0.1, 1 - Number(row.overall_bias_score || 0)).toFixed(2)
-        ),
-        verdict: row.likely_bias ? "Needs review" : "Supported"
-      })),
+      results
+        .filter((row) => row.status === "confirmed" || row.status === "downgraded")
+        .map((row, index) => ({
+          id: index + 1,
+          claim: row.sentence,
+          auditor_score: row.lexical_score,
+          verifier_confidence: row.contextual_score,
+          biased_phrases: (row.highlighted_terms || []).join(", ") || "—",
+          reasoning: row.reasoning || "—",
+          verdict: row.status
+        })),
     [results]
   );
-  const textSegments = useMemo(() => highlightedSegments(text), [text]);
+  // When API results are available, highlight the phrases the LLM actually flagged.
+  // Fall back to static keyword matching in demo mode.
+  const textSegments = useMemo(() => {
+    if (results.length > 0 && API_BASE_URL) {
+      // Build a flat list of flagged phrases from all sentences
+      const allPhrases = results.flatMap((r) => r.highlighted_terms || []);
+      if (allPhrases.length === 0) return [{ text, plain: true }];
+      const escaped = allPhrases
+        .filter(Boolean)
+        .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .sort((a, b) => b.length - a.length);
+      const regex = new RegExp(`(${escaped.join("|")})`, "gi");
+      const segments = [];
+      let last = 0;
+      let m;
+      regex.lastIndex = 0;
+      while ((m = regex.exec(text)) !== null) {
+        if (m.index > last) segments.push({ text: text.slice(last, m.index), plain: true });
+        segments.push({ text: m[0], plain: false, type: "emotional", label: "LLM flagged", severity: "high" });
+        last = m.index + m[0].length;
+      }
+      if (last < text.length) segments.push({ text: text.slice(last), plain: true });
+      return segments;
+    }
+    return highlightedSegments(text);
+  }, [text, results]);
   const biasTypeCounts = useMemo(() => {
     const counts = {};
     textSegments.forEach((segment) => {
@@ -357,10 +376,7 @@ function App() {
 
     setToolLogs((previous) => [
       ...previous,
-      `[${new Date().toLocaleTimeString()}] detect_bias_started: ${sentences.length} sentence(s), pipeline=${activePipeline.label}`,
-      enableStability
-        ? `[${new Date().toLocaleTimeString()}] stability_enabled: running drift probes`
-        : `[${new Date().toLocaleTimeString()}] stability_disabled: skipped`
+      `[${new Date().toLocaleTimeString()}] detect_bias_started: ${sentences.length} sentence(s), pipeline=${activePipeline.label}`
     ]);
 
     if (!API_BASE_URL) {
@@ -445,7 +461,6 @@ function App() {
     const payload = {
       pipeline: activePipeline,
       baseline_model: BASELINE_MODEL,
-      stability_enabled: enableStability,
       summary,
       results
     };
@@ -490,7 +505,7 @@ function App() {
         <div className="hero-top">
           <div>
             <h1>Dual-Agent Bias Detection</h1>
-            <p>Demo cockpit for analysis, drift stability, verification, and audit logs.</p>
+            <p>MCP-orchestrated dual-agent pipeline for news bias detection.</p>
           </div>
           <span className="mode-pill">{modeLabel}</span>
         </div>
@@ -511,24 +526,19 @@ function App() {
       </section>
 
       <section className="tabs" role="tablist" aria-label="Demo sections">
-        {TABS.map((tab) => {
-          const isDisabled = tab === "stability" && !enableStability;
-          return (
-            <button
-              key={tab}
-              className={`tab-btn ${activeTab === tab ? "active" : ""}`}
-              onClick={() => setActiveTab(tab)}
-              disabled={isDisabled}
-            >
-              {tab === "analyze" && "Analyze"}
-              {tab === "dashboard" && "Dashboard"}
-              {tab === "baseline" && "Baseline Compare"}
-              {tab === "stability" && "Stability Panel"}
-              {tab === "verification" && "Verification"}
-              {tab === "logs" && "Tool Logs"}
-            </button>
-          );
-        })}
+        {TABS.map((tab) => (
+          <button
+            key={tab}
+            className={`tab-btn ${activeTab === tab ? "active" : ""}`}
+            onClick={() => setActiveTab(tab)}
+          >
+            {tab === "analyze" && "Analyze"}
+            {tab === "dashboard" && "Dashboard"}
+            {tab === "baseline" && "Baseline Compare"}
+            {tab === "verification" && "Verification"}
+            {tab === "logs" && "Tool Logs"}
+          </button>
+        ))}
       </section>
 
       {activeTab === "analyze" ? (
@@ -565,14 +575,6 @@ function App() {
               <p className="subdued">
                 Baseline comparison: <strong>{BASELINE_MODEL}</strong>
               </p>
-              <label className="checkbox-row">
-                <input
-                  type="checkbox"
-                  checked={enableStability}
-                  onChange={(event) => setEnableStability(event.target.checked)}
-                />
-                Enable stability testing
-              </label>
             </div>
           </div>
 
@@ -803,56 +805,44 @@ function App() {
         </section>
       ) : null}
 
-      {activeTab === "stability" && enableStability ? (
-        <section className="panel">
-          <div className="results-header">
-            <h2>Stability Panel</h2>
-            <p>Drift timeline</p>
-          </div>
-          <div className="timeline">
-            {stabilitySeries.map((point) => (
-              <div key={point.run} className="timeline-row">
-                <span>Run {point.run}</span>
-                <div className="bar-track">
-                  <div className="bar-fill drift" style={{ width: formatPercent(point.drift) }} />
-                </div>
-                <strong>{point.drift.toFixed(2)}</strong>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
       {activeTab === "verification" ? (
         <section className="panel">
           <div className="results-header">
-            <h2>Verification Tab</h2>
-            <p>Secondary verifier confidence view</p>
+            <h2>Verifier Review</h2>
+            <p>Sentences flagged by the auditor — showing verifier decision and reasoning</p>
           </div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>ID</th>
-                  <th>Claim</th>
-                  <th>Support Confidence</th>
+                  <th>Sentence</th>
+                  <th>Auditor</th>
+                  <th>Verifier Conf.</th>
+                  <th>Flagged Phrases</th>
                   <th>Verdict</th>
                 </tr>
               </thead>
               <tbody>
                 {verificationRows.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="placeholder">
-                      No verification rows yet. Run analysis first.
+                    <td colSpan={5} className="placeholder">
+                      {results.length === 0
+                        ? "Run analysis first."
+                        : "No sentences were flagged by the auditor."}
                     </td>
                   </tr>
                 ) : (
                   verificationRows.map((row) => (
                     <tr key={row.id}>
-                      <td>#{row.id}</td>
                       <td>{row.claim}</td>
-                      <td>{row.support_confidence}</td>
-                      <td>{row.verdict}</td>
+                      <td>{row.auditor_score}</td>
+                      <td>{row.verifier_confidence}</td>
+                      <td style={{ fontStyle: "italic", color: "#bbc6f0" }}>{row.biased_phrases}</td>
+                      <td>
+                        <span className={row.verdict === "confirmed" ? "status-chip danger" : "status-chip muted"}>
+                          {row.verdict}
+                        </span>
+                      </td>
                     </tr>
                   ))
                 )}
