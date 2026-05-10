@@ -16,11 +16,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from mcp_server.audit import init_db
+from mcp_server.auditing import init_db
 from mcp_server.basil_dataset import load_basil_sentences, split_sentence_frame
 from mcp_server.basil_paths import resolve_basil_data_dir
 from mcp_server.auditor import get_auditor
-from mcp_server.server import basil_outlet_drift, detect_bias, evaluate_basil, nli_check
+from mcp_server.bias_surface import (
+    run_basil_outlet_drift,
+    run_detect_bias,
+    run_evaluate_basil,
+    run_nli_check,
+)
 
 
 def _slide(title: str, readout: str, payload: dict) -> None:
@@ -34,6 +39,12 @@ def _slide(title: str, readout: str, payload: dict) -> None:
 
 
 def main() -> None:
+    if not os.environ.get("AUDITOR_MODEL_ID", "").strip():
+        print("ERROR: set AUDITOR_MODEL_ID", file=sys.stderr)
+        sys.exit(1)
+    if not os.environ.get("NLI_MODEL_NAME", "").strip():
+        print("ERROR: set NLI_MODEL_NAME", file=sys.stderr)
+        sys.exit(1)
     init_db()
     _ = get_auditor()
 
@@ -62,7 +73,7 @@ def main() -> None:
         claim = "Expert annotators marked at least one media-bias span on this BASIL sentence."
         for name, row in [("gold=biased", pos.iloc[0]), ("gold=neutral", neg.iloc[0])]:
             sent = str(row["sentence_text"])[:800]
-            out = nli_check(sent, claim)
+            out = run_nli_check(sent, claim)
             _slide(
                 f'{out["demo_title"]} — {name}',
                 out["demo_readout"],
@@ -75,14 +86,14 @@ def main() -> None:
 
     cap = int(os.environ.get("BASIL_EVAL_CAP", "500"))
     threshold = float(os.environ.get("AUDITOR_THRESHOLD", "0.5"))
-    out = evaluate_basil(max_sentences=cap if cap > 0 else 0, threshold=threshold)
+    out = run_evaluate_basil(max_sentences=cap if cap > 0 else 0, threshold=threshold)
     _slide(
         out.get("demo_title", "BASIL evaluation"),
         out.get("demo_readout", ""),
         {k: v for k, v in out.items() if k not in ("demo_title", "demo_readout")},
     )
 
-    out = basil_outlet_drift()
+    out = run_basil_outlet_drift()
     _slide(
         out.get("demo_title", "Drift"),
         out.get("demo_readout", ""),

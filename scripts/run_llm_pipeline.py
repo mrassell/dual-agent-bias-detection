@@ -1,33 +1,19 @@
 #!/usr/bin/env python3
-"""Dual-agent LLM bias detection pipeline — configurable model setup.
+"""Dual-agent cloud LLM pipeline — **no hard-coded model IDs or vendors**.
 
-Supports four pipeline modes via PIPELINE_MODE env var:
+Uses ``mcp_server.bias_surface.run_llm_bias_score`` and ``run_llm_verify`` (same as MCP
+tools ``llm_bias_score`` / ``llm_verify``). Each inference logs to SQLite via ``internal_audit=True``.
 
-    gpt-only      GPT-4o-mini scores every sentence, no verifier
-    claude-only   Claude-haiku scores every sentence, no verifier
-    gpt-claude    GPT auditor → Claude verifier  (default)
-    claude-gpt    Claude auditor → GPT verifier  (flipped)
-
-The two agents are coordinated through the same MCP audit infrastructure,
-demonstrating that provider-swapping requires zero tool-code changes.
+Env
+---
+    BIAS_LLM_AUDITOR_SLOT     slot id for scorer (default ``A``) → ``BIAS_LLM_<SLOT>_VENDOR``, ``_MODEL``, keys
+    BIAS_LLM_VERIFIER_SLOT    if set (e.g. ``B``), run verifier on auditor-positive sentences
+    BASIL_DATA_DIR, SAMPLE_SIZE, AUDITOR_THRESHOLD, VERIFY_THRESHOLD
 
 Outputs
 -------
 outputs/llm_pipeline_predictions.csv
 outputs/llm_pipeline_metrics.json
-
-Usage
------
-    OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... \\
-    BASIL_DATA_DIR=... PIPELINE_MODE=gpt-claude python scripts/run_llm_pipeline.py
-
-Env vars
---------
-    PIPELINE_MODE       gpt-only | claude-only | gpt-claude | claude-gpt (default: gpt-claude)
-    BASIL_DATA_DIR      path to BASIL *.json articles
-    SAMPLE_SIZE         sentences per outlet, default 67 (~201 total); 0 = full test split
-    AUDITOR_THRESHOLD   decision threshold (falls back to threshold_choice.json)
-    VERIFY_THRESHOLD    min confidence for verifier to confirm bias (default 0.5)
 """
 
 from __future__ import annotations
@@ -46,64 +32,21 @@ if str(ROOT) not in sys.path:
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
-from sklearn.metrics import (
-    accuracy_score, f1_score, precision_score, recall_score
-)
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 import numpy as np
 
-from mcp_server.audit import init_db, log_call
+from mcp_server.auditing import init_db
 from mcp_server.basil_dataset import load_basil_sentences, split_sentence_frame
 from mcp_server.basil_paths import resolve_basil_data_dir
-
-import anthropic as anthropic_sdk
-import openai as openai_sdk
+from mcp_server.bias_surface import run_llm_bias_score, run_llm_verify
+from mcp_server.providers import resolve_slot_config
 
 OUTPUTS = ROOT / "outputs"
-
-GPT_MODEL    = "gpt-4o-mini"
-CLAUDE_MODEL = "claude-haiku-4-5-20251001"
-
 SAMPLE_PER_OUTLET = int(os.environ.get("SAMPLE_SIZE", "67"))
-VERIFY_THRESHOLD  = float(os.environ.get("VERIFY_THRESHOLD", "0.5"))
+VERIFY_THRESHOLD = float(os.environ.get("VERIFY_THRESHOLD", "0.5"))
+AUDITOR_SLOT = os.environ.get("BIAS_LLM_AUDITOR_SLOT", "A").strip()
+VERIFIER_SLOT = os.environ.get("BIAS_LLM_VERIFIER_SLOT", "").strip()
 
-# Pipeline mode — controls which model is auditor and which is verifier
-VALID_MODES = {"gpt-only", "claude-only", "gpt-claude", "claude-gpt"}
-PIPELINE_MODE = os.environ.get("PIPELINE_MODE", "gpt-claude").strip().lower()
-if PIPELINE_MODE not in VALID_MODES:
-    print(f"ERROR: PIPELINE_MODE must be one of {VALID_MODES}", file=sys.stderr)
-    sys.exit(1)
-
-# ------------------------------------------------------------------ #
-# Prompts                                                             #
-# ------------------------------------------------------------------ #
-
-AUDITOR_PROMPT = """You are a media bias classifier. Score the following news sentence for media bias.
-Return JSON only — no other text:
-{
-  "bias_score": <float 0.0 to 1.0>,
-  "bias_type": <"lexical", "informational", or "none">,
-  "reasoning": <one sentence, max 30 words>
-}"""
-
-VERIFIER_PROMPT = """You are a media bias verification agent. An AI auditor has flagged the following \
-news sentence as potentially biased. Your job is to verify whether the assessment is correct.
-
-Consider:
-- Does the sentence use loaded or emotionally charged language?
-- Does it present information in a one-sided or misleading way?
-- Could a reasonable, neutral reader consider this biased reporting?
-
-Return JSON only — no other text:
-{
-  "verified": <true or false>,
-  "confidence": <float 0.0 to 1.0>,
-  "reasoning": <one sentence, max 30 words>
-}"""
-
-
-# ------------------------------------------------------------------ #
-# Threshold                                                           #
-# ------------------------------------------------------------------ #
 
 def _load_threshold() -> float:
     env_val = os.environ.get("AUDITOR_THRESHOLD", "").strip()
@@ -117,130 +60,34 @@ def _load_threshold() -> float:
     return 0.5
 
 
-# ------------------------------------------------------------------ #
-# JSON parsing helpers                                                #
-# ------------------------------------------------------------------ #
-
-import re as _re
-
-def _extract_json(raw: str) -> dict:
-    raw = _re.sub(r"```(?:json)?\s*", "", raw).strip()
-    m = _re.search(r"\{.*\}", raw, _re.DOTALL)
-    if m:
-        raw = m.group(0)
-    return json.loads(raw)
-
-
-# ------------------------------------------------------------------ #
-# Model callers — one per provider                                    #
-# ------------------------------------------------------------------ #
-
-def _call_gpt(sentence: str, prompt: str, role: str) -> dict:
-    """Call GPT-4o-mini with the given system prompt."""
-    client = openai_sdk.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    resp = client.chat.completions.create(
-        model=GPT_MODEL,
-        max_tokens=300,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": prompt},
-            {"role": "user",   "content": f"Sentence: {sentence}"},
-        ],
-    )
-    raw = resp.choices[0].message.content.strip()
-    data = _extract_json(raw)
-    result = {k: (float(v) if isinstance(v, (int, float)) else v)
-              for k, v in data.items()}
-    log_call(f"{role}_gpt", {"sentence": sentence[:500]}, result)
-    return result
-
-
-def _call_claude(sentence: str, prompt: str, role: str,
-                 extra_context: str = "") -> dict:
-    """Call Claude-haiku with the given system prompt."""
-    client = anthropic_sdk.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    user_content = f"Sentence: {sentence}"
-    if extra_context:
-        user_content += f"\n\n{extra_context}"
-    resp = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=300,
-        system=prompt,
-        messages=[{"role": "user", "content": user_content}],
-    )
-    raw = resp.content[0].text.strip() if resp.content else "{}"
-    data = _extract_json(raw)
-    result = {k: (float(v) if isinstance(v, (int, float)) else v)
-              for k, v in data.items()}
-    log_call(f"{role}_claude", {"sentence": sentence[:500]}, result)
-    return result
-
-
-# ------------------------------------------------------------------ #
-# Pipeline-mode dispatch                                              #
-# ------------------------------------------------------------------ #
-
-def _resolve_pipeline():
-    """Return (auditor_fn, verifier_fn_or_None, auditor_label, verifier_label)."""
-    if PIPELINE_MODE == "gpt-only":
-        audit_fn  = lambda s: _call_gpt(s, AUDITOR_PROMPT, "audit")
-        verify_fn = None
-        return audit_fn, verify_fn, GPT_MODEL, "none"
-
-    if PIPELINE_MODE == "claude-only":
-        audit_fn  = lambda s: _call_claude(s, AUDITOR_PROMPT, "audit")
-        verify_fn = None
-        return audit_fn, verify_fn, CLAUDE_MODEL, "none"
-
-    if PIPELINE_MODE == "gpt-claude":
-        audit_fn  = lambda s:       _call_gpt(s, AUDITOR_PROMPT, "audit")
-        verify_fn = lambda s, note: _call_claude(s, VERIFIER_PROMPT, "verify",
-                                                  f"Auditor note: {note}")
-        return audit_fn, verify_fn, GPT_MODEL, CLAUDE_MODEL
-
-    if PIPELINE_MODE == "claude-gpt":
-        audit_fn  = lambda s:       _call_claude(s, AUDITOR_PROMPT, "audit")
-        verify_fn = lambda s, note: _call_gpt(s, VERIFIER_PROMPT + \
-                                               f"\n\nAuditor note: {note}", "verify")
-        return audit_fn, verify_fn, CLAUDE_MODEL, GPT_MODEL
-
-    raise ValueError(f"Unknown PIPELINE_MODE: {PIPELINE_MODE}")
-
-
-# ------------------------------------------------------------------ #
-# Metrics                                                             #
-# ------------------------------------------------------------------ #
-
 def _metrics(y_true, y_pred, label: str) -> dict:
     y_true = np.array(y_true, dtype=np.int64)
     y_pred = np.array(y_pred, dtype=np.int64)
     return {
-        "label":         label,
+        "label": label,
         "sentence_count": int(len(y_true)),
-        "accuracy":      round(float(accuracy_score(y_true, y_pred)), 6),
-        "precision":     round(float(precision_score(y_true, y_pred, zero_division=0)), 6),
-        "recall":        round(float(recall_score(y_true, y_pred, zero_division=0)), 6),
-        "f1_macro":      round(float(f1_score(y_true, y_pred, average="macro", zero_division=0)), 6),
+        "accuracy": round(float(accuracy_score(y_true, y_pred)), 6),
+        "precision": round(float(precision_score(y_true, y_pred, zero_division=0)), 6),
+        "recall": round(float(recall_score(y_true, y_pred, zero_division=0)), 6),
+        "f1_macro": round(float(f1_score(y_true, y_pred, average="macro", zero_division=0)), 6),
         "positive_rate": round(float(y_pred.mean()), 6),
     }
 
 
-# ------------------------------------------------------------------ #
-# Main                                                                #
-# ------------------------------------------------------------------ #
-
 def main() -> None:
-    # Validate required API keys based on mode
-    needed = []
-    if PIPELINE_MODE in ("gpt-only", "gpt-claude", "claude-gpt"):
-        needed.append("OPENAI_API_KEY")
-    if PIPELINE_MODE in ("claude-only", "gpt-claude", "claude-gpt"):
-        needed.append("ANTHROPIC_API_KEY")
-    missing = [k for k in needed if not os.environ.get(k)]
-    if missing:
-        print(f"ERROR: missing env vars for mode '{PIPELINE_MODE}': {', '.join(missing)}",
-              file=sys.stderr)
+    try:
+        aud_cfg = resolve_slot_config(AUDITOR_SLOT)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
+
+    ver_cfg = None
+    if VERIFIER_SLOT:
+        try:
+            ver_cfg = resolve_slot_config(VERIFIER_SLOT)
+        except ValueError as e:
+            print(f"ERROR (verifier slot): {e}", file=sys.stderr)
+            sys.exit(1)
 
     init_db()
     OUTPUTS.mkdir(exist_ok=True)
@@ -252,15 +99,14 @@ def main() -> None:
         sys.exit(1)
 
     threshold = _load_threshold()
-    audit_fn, verify_fn, auditor_label, verifier_label = _resolve_pipeline()
 
     import pandas as pd
+
     print(f"Loading BASIL from {data_dir} ...")
     frame = load_basil_sentences(data_dir)
     _, test = split_sentence_frame(frame, test_size=0.2, random_state=42)
     test = test.reset_index(drop=True)
 
-    # Stratified sample (or full split if SAMPLE_SIZE=0)
     if SAMPLE_PER_OUTLET > 0:
         parts = []
         for outlet, grp in test.groupby("source"):
@@ -270,54 +116,59 @@ def main() -> None:
     else:
         sample = test
 
-    print(f"Mode      : {PIPELINE_MODE}")
-    print(f"Auditor   : {auditor_label}")
-    print(f"Verifier  : {verifier_label}")
-    print(f"Sample    : {len(sample)} sentences — {dict(sample['source'].value_counts())}")
+    aud_label = f"{aud_cfg.vendor}:{aud_cfg.model}"
+    ver_label = f"{ver_cfg.vendor}:{ver_cfg.model}" if ver_cfg else "(no verifier)"
+    print(f"Auditor slot {AUDITOR_SLOT} : {aud_label}")
+    print(f"Verifier slot {VERIFIER_SLOT or '—'} : {ver_label}")
+    print(f"Sample    : {len(sample)} sentences")
     print(f"Threshold : {threshold}\n")
 
     rows: list[dict] = []
     auditor_only_preds: list[int] = []
-    final_preds:        list[int] = []
-    gold_labels:        list[int] = []
+    final_preds: list[int] = []
+    gold_labels: list[int] = []
     verifier_calls = 0
     verifier_downgrades = 0
+    auditor_positive_count = 0
 
     for i, (_, row) in enumerate(sample.iterrows()):
         sentence = str(row["sentence_text"])
-        gold     = int(row["label"])
-
+        gold = int(row["label"])
         if (i + 1) % 25 == 0:
             print(f"  {i + 1}/{len(sample)}")
 
-        # --- Agent 1: Auditor ---
         try:
-            aud = audit_fn(sentence)
+            aud = run_llm_bias_score(sentence, AUDITOR_SLOT, internal_audit=True)
         except Exception as e:
             print(f"  [warn] Auditor error at {i}: {e}")
             aud = {"bias_score": 0.5, "bias_type": "none", "reasoning": str(e)}
         time.sleep(0.1)
 
         aud_score = float(aud.get("bias_score", 0.5))
-        aud_pred  = int(aud_score >= threshold)
+        aud_pred = int(aud_score >= threshold)
+        if aud_pred == 1:
+            auditor_positive_count += 1
 
-        # --- Agent 2: Verifier (only if auditor says biased and verifier exists) ---
-        ver_verdict    = "skipped"
-        ver_verified   = None
+        ver_verdict = "skipped"
+        ver_verified = None
         ver_confidence = None
-        ver_reasoning  = ""
-        final_pred     = aud_pred
+        ver_reasoning = ""
+        final_pred = aud_pred
 
-        if aud_pred == 1 and verify_fn is not None:
+        if aud_pred == 1 and ver_cfg is not None:
             verifier_calls += 1
             try:
-                ver = verify_fn(sentence, aud.get("reasoning", ""))
-                ver_verified   = bool(ver.get("verified", False))
+                ver = run_llm_verify(
+                    sentence,
+                    str(aud.get("reasoning", "")),
+                    VERIFIER_SLOT,
+                    internal_audit=True,
+                )
+                ver_verified = bool(ver.get("verified", False))
                 ver_confidence = float(ver.get("confidence", 0.0))
-                ver_reasoning  = str(ver.get("reasoning", ""))
-
+                ver_reasoning = str(ver.get("reasoning", ""))
                 if not ver_verified or ver_confidence < VERIFY_THRESHOLD:
-                    final_pred  = 0
+                    final_pred = 0
                     ver_verdict = "downgraded"
                     verifier_downgrades += 1
                 else:
@@ -331,120 +182,80 @@ def main() -> None:
         final_preds.append(final_pred)
         gold_labels.append(gold)
 
-        rows.append({
-            "event_id":         row["event_id"],
-            "outlet":           row["source"],
-            "sentence":         sentence,
-            "gold":             gold,
-            "auditor_score":    round(aud_score, 6),
-            "auditor_pred":     aud_pred,
-            "auditor_type":     aud["bias_type"],
-            "auditor_reasoning":aud["reasoning"],
-            "verifier_verdict": ver_verdict,
-            "verifier_verified":str(ver_verified),
-            "verifier_confidence": str(ver_confidence),
-            "verifier_reasoning":  ver_reasoning,
-            "final_pred":       final_pred,
-            "correct":          int(final_pred == gold),
-        })
+        rows.append(
+            {
+                "event_id": row["event_id"],
+                "outlet": row["source"],
+                "sentence": sentence,
+                "gold": gold,
+                "auditor_score": round(aud_score, 6),
+                "auditor_pred": aud_pred,
+                "auditor_type": aud["bias_type"],
+                "auditor_reasoning": aud["reasoning"],
+                "verifier_verdict": ver_verdict,
+                "verifier_verified": str(ver_verified),
+                "verifier_confidence": str(ver_confidence),
+                "verifier_reasoning": ver_reasoning,
+                "final_pred": final_pred,
+                "correct": int(final_pred == gold),
+            }
+        )
 
-    # ------------------------------------------------------------------ #
-    # Metrics                                                             #
-    # ------------------------------------------------------------------ #
     print("\nComputing metrics ...")
-
-    pipeline_label = PIPELINE_MODE if verify_fn else f"{PIPELINE_MODE} (no verifier)"
-    aud_metrics   = _metrics(gold_labels, auditor_only_preds, f"auditor_only ({auditor_label})")
-    final_metrics = _metrics(gold_labels, final_preds,        f"pipeline ({pipeline_label})")
-
-    revision_rate = verifier_downgrades / len(rows)
+    pipeline_desc = "auditor+verifier" if ver_cfg else "auditor_only"
+    aud_metrics = _metrics(gold_labels, auditor_only_preds, f"auditor ({aud_label})")
+    final_metrics = _metrics(gold_labels, final_preds, f"pipeline ({pipeline_desc})")
+    revision_rate = verifier_downgrades / len(rows) if rows else 0.0
 
     outlet_breakdown: dict[str, dict] = {}
-    import pandas as pd
     result_df = pd.DataFrame(rows)
     for outlet, grp in result_df.groupby("outlet"):
         outlet_breakdown[str(outlet)] = {
-            "sentence_count":    len(grp),
-            "auditor_f1":        round(float(f1_score(grp["gold"], grp["auditor_pred"],
-                                                       average="macro", zero_division=0)), 4),
-            "pipeline_f1":       round(float(f1_score(grp["gold"], grp["final_pred"],
-                                                       average="macro", zero_division=0)), 4),
-            "verifier_calls":    int((grp["verifier_verdict"] != "skipped").sum()),
-            "downgrades":        int((grp["verifier_verdict"] == "downgraded").sum()),
+            "sentence_count": len(grp),
+            "auditor_f1": round(
+                float(f1_score(grp["gold"], grp["auditor_pred"], average="macro", zero_division=0)), 4
+            ),
+            "pipeline_f1": round(
+                float(f1_score(grp["gold"], grp["final_pred"], average="macro", zero_division=0)), 4
+            ),
+            "verifier_calls": int((grp["verifier_verdict"] != "skipped").sum()),
+            "downgrades": int((grp["verifier_verdict"] == "downgraded").sum()),
         }
 
     full_metrics = {
-        "pipeline_mode":    PIPELINE_MODE,
-        "auditor_model":    auditor_label,
-        "verifier_model":   verifier_label,
-        "threshold":        threshold,
+        "auditor_slot": AUDITOR_SLOT,
+        "verifier_slot": VERIFIER_SLOT or None,
+        "auditor_model": aud_label,
+        "verifier_model": ver_label,
+        "threshold": threshold,
         "verify_threshold": VERIFY_THRESHOLD,
-        "sample_size":      len(rows),
-        "auditor_only":     aud_metrics,
-        "pipeline":         final_metrics,
-        "verifier_calls":   verifier_calls,
+        "sample_size": len(rows),
+        "auditor_only": aud_metrics,
+        "pipeline": final_metrics,
+        "verifier_calls": verifier_calls,
+        "auditor_positive_count": auditor_positive_count,
         "verifier_downgrades": verifier_downgrades,
-        "revision_rate":    round(revision_rate, 6),
+        "revision_rate": round(revision_rate, 6),
         "outlet_breakdown": outlet_breakdown,
     }
 
-    # ------------------------------------------------------------------ #
-    # Save outputs                                                        #
-    # ------------------------------------------------------------------ #
     csv_path = OUTPUTS / "llm_pipeline_predictions.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
-    print(f"Saved {csv_path}  ({len(rows)} rows)")
+    print(f"Saved {csv_path}")
 
     metrics_path = OUTPUTS / "llm_pipeline_metrics.json"
     metrics_path.write_text(json.dumps(full_metrics, indent=2))
     print(f"Saved {metrics_path}")
 
-    # ------------------------------------------------------------------ #
-    # Summary                                                             #
-    # ------------------------------------------------------------------ #
     print("\n" + "=" * 60)
-    print("DUAL-AGENT LLM PIPELINE SUMMARY")
+    print("LLM PIPELINE (bias_surface + SQLite audit per call)")
     print("=" * 60)
-    print(f"Mode     : {PIPELINE_MODE}")
-    print(f"Auditor  : {auditor_label}")
-    print(f"Verifier : {verifier_label}")
-    print(f"Sample   : {len(rows)} sentences (stratified by outlet)")
-    print(f"Threshold: {threshold}")
-    print()
-    print(f"{'Metric':<20} {'Auditor-only':>14} {'Pipeline':>14}")
-    print("-" * 50)
     for key in ["accuracy", "precision", "recall", "f1_macro"]:
-        a = aud_metrics[key]
-        p = final_metrics[key]
-        diff = p - a
-        sign = "+" if diff >= 0 else ""
-        print(f"{key:<20} {a:>14.4f} {p:>14.4f}  ({sign}{diff:.4f})")
-    print()
-    print(f"Verifier calls     : {verifier_calls} / {len(rows)} "
-          f"({verifier_calls/len(rows):.1%} of sentences audited positive)")
-    print(f"Verifier downgrades: {verifier_downgrades} "
-          f"({revision_rate:.1%} of all sentences revised)")
-    print()
-    print("Per-outlet breakdown (F1 macro):")
-    for outlet, m in sorted(outlet_breakdown.items()):
-        print(f"  {outlet:<8}  auditor={m['auditor_f1']:.4f}  "
-              f"pipeline={m['pipeline_f1']:.4f}  "
-              f"downgrades={m['downgrades']}/{m['verifier_calls']}")
-
-    # Example where verifier changed the call
-    downgrades = [r for r in rows if r["verifier_verdict"] == "downgraded"]
-    if downgrades:
-        ex = downgrades[0]
-        print(f"\nExample downgrade (outlet={ex['outlet']}, gold={'biased' if ex['gold'] else 'not biased'}):")
-        print(f"  Sentence   : {ex['sentence'][:110]}{'...' if len(ex['sentence']) > 110 else ''}")
-        print(f"  GPT scored : {ex['auditor_score']:.3f} → biased  [{ex['auditor_reasoning']}]")
-        print(f"  Claude said: NOT verified (conf={ex['verifier_confidence']})  [{ex['verifier_reasoning']}]")
-        print(f"  Final pred : not biased  |  Gold: {'biased' if ex['gold'] else 'not biased'}")
-
-    print(f"\nOutputs saved to outputs/")
+        print(f"  {key}: auditor {aud_metrics[key]:.4f}  pipeline {final_metrics[key]:.4f}")
+    print(f"\nVerifier downgrades: {verifier_downgrades} / {len(rows)}")
 
 
 if __name__ == "__main__":

@@ -8,5 +8,22 @@
     "mae": 0.275377,
     "predicted_positive_rate": 0.284852,
     "gold_positive_rate": 0.20338
-  }
+  },
+  "fixed_threshold_0_50": {
+    "threshold": 0.5,
+    "accuracy": 0.785757,
+    "precision": 0.478571,
+    "recall": 0.596439,
+    "f1_macro": 0.696105,
+    "mae": 0.275377,
+    "predicted_positive_rate": 0.25347,
+    "gold_positive_rate": 0.20338
+  },
+  "sweep_thresholds": [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6],
+  "artifacts": {
+    "threshold_sweep_csv": "outputs/threshold_sweep.csv",
+    "precision_recall_curve_png": "outputs/precision_recall_curve.png",
+    "threshold_vs_f1_macro_png": "outputs/threshold_vs_f1_macro.png"
+  },
+  "_notes": "Re-run scripts/threshold_sweep.py after BASIL fine-tuning or checkpoint changes. f1_optimal maximizes macro-F1; fixed_threshold_0_50 records the legacy 0.5 operating point on the same score cache."
 }

@@ -9,8 +9,17 @@ import numpy as np
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-DEFAULT_AUDITOR_MODEL = "mediabiasgroup/roberta-babe-ft"
 MAX_LENGTH = 256
+
+
+def _resolve_auditor_model_id(model_id: str | None) -> str:
+    mid = (model_id or os.environ.get("AUDITOR_MODEL_ID", "")).strip()
+    if not mid:
+        raise ValueError(
+            "Set AUDITOR_MODEL_ID to a Hugging Face model id or a local checkpoint directory "
+            "(no default is configured in code)."
+        )
+    return mid
 
 
 def _softmax2d(logits: np.ndarray) -> np.ndarray:
@@ -24,7 +33,7 @@ class LexicalBiasAuditor:
     """Binary classifier: neutral vs lexical bias (BABE checkpoint)."""
 
     def __init__(self, model_id: str | None = None) -> None:
-        self.model_id = (model_id or os.environ.get("AUDITOR_MODEL_ID") or DEFAULT_AUDITOR_MODEL).strip()
+        self.model_id = _resolve_auditor_model_id(model_id)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
         self.model = AutoModelForSequenceClassification.from_pretrained(self.model_id)
         self.model.eval()

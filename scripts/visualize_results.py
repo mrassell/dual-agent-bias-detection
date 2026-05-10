@@ -4,10 +4,10 @@
 Outputs
 -------
 outputs/viz_bias_rates_by_outlet.png      per-outlet bias rates across models
-outputs/viz_score_distributions.png       GPT vs Claude score distributions
+outputs/viz_score_distributions.png       score distributions (slot A vs B)
 outputs/viz_pipeline_funnel.png           dual-agent pipeline flow
 outputs/viz_model_comparison.png          F1 / metrics comparison bar chart
-outputs/viz_agreement_heatmap.png         GPT vs Claude prediction agreement
+outputs/viz_agreement_heatmap.png         slot A vs slot B prediction agreement
 
 Usage
 -----
@@ -46,6 +46,30 @@ with open(OUTPUTS / "multi_provider_metrics.json") as f:
     mp_metrics = json.load(f)
 
 
+def _ensure_legacy_multi_provider_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Support both legacy gpt_/claude_ columns and env-slot score_a/pred_a naming."""
+    out = df.copy()
+    if "pred_a" in out.columns and "gpt_pred" not in out.columns:
+        out["gpt_pred"] = out["pred_a"]
+    if "pred_b" in out.columns and "claude_pred" not in out.columns:
+        out["claude_pred"] = out["pred_b"]
+    if "score_a" in out.columns and "gpt_score" not in out.columns:
+        out["gpt_score"] = out["score_a"]
+    if "score_b" in out.columns and "claude_score" not in out.columns:
+        out["claude_score"] = out["score_b"]
+    return out
+
+
+mp = _ensure_legacy_multi_provider_columns(mp)
+
+SLOT_A_LABEL = mp_metrics.get("column_labels", {}).get("score_a", "Slot A")
+SLOT_B_LABEL = mp_metrics.get("column_labels", {}).get("score_b", "Slot B")
+MP_THRESHOLD = float(mp_metrics.get("threshold", 0.4))
+AUD_LLM = llm_metrics.get("auditor_model", "Auditor")
+VER_LLM = llm_metrics.get("verifier_model", "Verifier")
+PIPELINE_LEGEND = f"{AUD_LLM}→{VER_LLM}" if VER_LLM != "(no verifier)" else f"{AUD_LLM} (solo)"
+
+
 # ================================================================== #
 # 1. Bias rates by outlet                                             #
 # ================================================================== #
@@ -62,9 +86,9 @@ claude_rates= [mp.groupby("outlet").apply(lambda g: g["claude_pred"].mean())[o] 
 pipe_rates  = [llm.groupby("outlet").apply(lambda g: g["final_pred"].mean())[o] for o in outlets]
 
 b1 = ax.bar(x - 1.5*width, gold_rates,   width, label="Gold label",         color="#888888")
-b2 = ax.bar(x - 0.5*width, gpt_rates,    width, label="GPT-4o-mini (auditor)", color="#4A90D9")
-b3 = ax.bar(x + 0.5*width, claude_rates, width, label="Claude-haiku (solo)",  color="#E8534A")
-b4 = ax.bar(x + 1.5*width, pipe_rates,   width, label="GPT→Claude pipeline",  color="#4CAF73")
+b2 = ax.bar(x - 0.5*width, gpt_rates,    width, label=f"{SLOT_A_LABEL}", color="#4A90D9")
+b3 = ax.bar(x + 0.5*width, claude_rates, width, label=f"{SLOT_B_LABEL}",  color="#E8534A")
+b4 = ax.bar(x + 1.5*width, pipe_rates,   width, label=f"LLM pipeline ({PIPELINE_LEGEND})",  color="#4CAF73")
 
 ax.set_xticks(x)
 ax.set_xticklabels([OUTLET_LABELS[o] for o in outlets], fontsize=11)
@@ -88,7 +112,7 @@ print("Saved viz_bias_rates_by_outlet.png")
 
 
 # ================================================================== #
-# 2. Bias score distributions (GPT vs Claude)                        #
+# 2. Bias score distributions (slot A vs slot B)                      #
 # ================================================================== #
 
 fig, axes = plt.subplots(1, 3, figsize=(13, 4), sharey=True)
@@ -96,11 +120,12 @@ bins = np.linspace(0, 1, 21)
 
 for ax, outlet in zip(axes, outlets):
     grp = mp[mp["outlet"] == outlet]
-    ax.hist(grp["gpt_score"],    bins=bins, alpha=0.65, label="GPT-4o-mini",
+    ax.hist(grp["gpt_score"],    bins=bins, alpha=0.65, label=SLOT_A_LABEL,
             color="#4A90D9", edgecolor="white", linewidth=0.4)
-    ax.hist(grp["claude_score"], bins=bins, alpha=0.65, label="Claude-haiku",
+    ax.hist(grp["claude_score"], bins=bins, alpha=0.65, label=SLOT_B_LABEL,
             color="#E8534A", edgecolor="white", linewidth=0.4)
-    ax.axvline(0.4, color="black", linestyle="--", linewidth=1.2, label="Threshold (0.40)")
+    ax.axvline(MP_THRESHOLD, color="black", linestyle="--", linewidth=1.2,
+               label=f"Threshold ({MP_THRESHOLD:.2f})")
     ax.set_title(OUTLET_LABELS[outlet], fontsize=11, fontweight="bold")
     ax.set_xlabel("Bias score", fontsize=10)
     ax.spines[["top", "right"]].set_visible(False)
@@ -109,7 +134,7 @@ for ax, outlet in zip(axes, outlets):
         ax.set_ylabel("Sentence count", fontsize=10)
         ax.legend(fontsize=8)
 
-fig.suptitle("Bias Score Distributions: GPT-4o-mini vs Claude-haiku", fontsize=13, fontweight="bold")
+fig.suptitle(f"Bias Score Distributions: {SLOT_A_LABEL} vs {SLOT_B_LABEL}", fontsize=13, fontweight="bold")
 fig.tight_layout()
 fig.savefig(OUTPUTS / "viz_score_distributions.png", dpi=150)
 plt.close(fig)
@@ -120,11 +145,16 @@ print("Saved viz_score_distributions.png")
 # 3. Dual-agent pipeline funnel                                       #
 # ================================================================== #
 
-total      = llm_metrics["sample_size"]
-aud_pos    = llm_metrics["verifier_calls"]
-aud_neg    = total - aud_pos
-confirmed  = aud_pos - llm_metrics["verifier_downgrades"]
-downgraded = llm_metrics["verifier_downgrades"]
+total       = llm_metrics["sample_size"]
+aud_pos     = llm_metrics.get("auditor_positive_count", llm_metrics["verifier_calls"])
+aud_neg     = total - aud_pos
+has_verifier = bool(llm_metrics.get("verifier_slot"))
+if has_verifier:
+    confirmed  = llm_metrics["verifier_calls"] - llm_metrics["verifier_downgrades"]
+    downgraded = llm_metrics["verifier_downgrades"]
+else:
+    confirmed  = aud_pos
+    downgraded = 0
 final_pos  = llm_metrics["pipeline"]["sentence_count"] * llm_metrics["pipeline"]["positive_rate"]
 
 fig, ax = plt.subplots(figsize=(8, 5))
@@ -147,26 +177,41 @@ funnel_box(ax, 1, 5.5, 8, 1.0, "#555555", "All sentences", total)
 
 # Row 2 — auditor split
 funnel_box(ax, 0.2, 3.8, 3.8, 1.0, "#4A90D9",
-           "GPT: not biased\n→ skip verifier", aud_neg, aud_neg/total)
+           f"{AUD_LLM}: not biased\n→ skip verifier", aud_neg, aud_neg/total)
+_send = f"→ send to {VER_LLM}" if has_verifier else "(no verifier — final = auditor)"
 funnel_box(ax, 5.0, 3.8, 4.0, 1.0, "#E8A23A",
-           "GPT: biased\n→ send to Claude", aud_pos, aud_pos/total)
+           f"{AUD_LLM}: biased\n{_send}", aud_pos, aud_pos/total)
 
-# Row 3 — verifier split
-funnel_box(ax, 5.0, 2.0, 1.8, 1.1, "#E8534A",
-           "Downgraded", downgraded, downgraded/total)
-funnel_box(ax, 7.1, 2.0, 1.8, 1.1, "#4CAF73",
-           "Confirmed", confirmed, confirmed/total)
+# Row 3 — verifier split (only meaningful when a verifier slot is configured)
+if has_verifier:
+    funnel_box(ax, 5.0, 2.0, 1.8, 1.1, "#E8534A",
+               "Downgraded", downgraded, downgraded/total)
+    funnel_box(ax, 7.1, 2.0, 1.8, 1.1, "#4CAF73",
+               "Confirmed", confirmed, confirmed/total)
+else:
+    funnel_box(ax, 5.0, 2.0, 3.9, 1.1, "#4CAF73",
+               "Auditor-positive (final)", confirmed, confirmed/total)
 
 # Row 4 — final
 funnel_box(ax, 1, 0.3, 8, 1.0, "#333333",
            f"Final prediction: biased", int(final_pos), int(final_pos)/total)
 
 # Arrows
-for (x1, y1, x2, y2) in [
-    (5, 5.5, 2.2, 4.8), (5, 5.5, 7.0, 4.8),
-    (6.0, 3.8, 5.9, 3.1), (7.8, 3.8, 7.9, 3.1),
-    (2.2, 3.8, 3.5, 1.3), (5.9, 2.0, 4.5, 1.3), (7.9, 2.0, 6.5, 1.3),
-]:
+arrow_list = [
+    (5, 5.5, 2.2, 4.8),
+    (5, 5.5, 7.0, 4.8),
+    (2.2, 3.8, 3.5, 1.3),
+]
+if has_verifier:
+    arrow_list += [
+        (6.0, 3.8, 5.9, 3.1),
+        (7.8, 3.8, 7.9, 3.1),
+        (5.9, 2.0, 4.5, 1.3),
+        (7.9, 2.0, 6.5, 1.3),
+    ]
+else:
+    arrow_list += [(7.0, 3.8, 6.5, 3.1), (6.5, 2.0, 4.5, 1.3)]
+for (x1, y1, x2, y2) in arrow_list:
     ax.annotate("", xy=(x2, y2), xytext=(x1, y1),
                 arrowprops=dict(arrowstyle="->", color="#aaaaaa", lw=1.5))
 
@@ -183,7 +228,11 @@ print("Saved viz_pipeline_funnel.png")
 
 fig, ax = plt.subplots(figsize=(9, 5))
 
-models  = ["GPT-4o-mini\n(auditor only)", "GPT→Claude\n(pipeline)", "RoBERTa-BABE\n(baseline)"]
+models  = [
+    f"{AUD_LLM}\n(auditor only)",
+    f"{PIPELINE_LEGEND}\n(pipeline)",
+    "RoBERTa-BABE\n(baseline)",
+]
 x       = np.arange(len(models))
 width   = 0.25
 
@@ -234,7 +283,7 @@ print("Saved viz_model_comparison.png")
 
 
 # ================================================================== #
-# 5. Agreement heatmap: GPT pred vs Claude pred                      #
+# 5. Agreement heatmap: slot A vs slot B predictions                  #
 # ================================================================== #
 
 from sklearn.metrics import confusion_matrix
@@ -250,8 +299,8 @@ for ax, outlet in zip(axes, outlets):
     ax.set_yticks([0, 1])
     ax.set_xticklabels(["Not biased", "Biased"], fontsize=9)
     ax.set_yticklabels(["Not biased", "Biased"], fontsize=9)
-    ax.set_xlabel("Claude prediction", fontsize=10)
-    ax.set_ylabel("GPT prediction", fontsize=10)
+    ax.set_xlabel(f"{SLOT_B_LABEL} prediction", fontsize=10)
+    ax.set_ylabel(f"{SLOT_A_LABEL} prediction", fontsize=10)
     ax.set_title(OUTLET_LABELS[outlet], fontsize=11, fontweight="bold")
 
     for i in range(2):
@@ -260,7 +309,7 @@ for ax, outlet in zip(axes, outlets):
                     fontsize=14, fontweight="bold",
                     color="white" if cm[i, j] > cm.max()*0.5 else "black")
 
-fig.suptitle("GPT vs Claude Prediction Agreement by Outlet", fontsize=13, fontweight="bold")
+fig.suptitle(f"{SLOT_A_LABEL} vs {SLOT_B_LABEL} — prediction agreement by outlet", fontsize=13, fontweight="bold")
 fig.tight_layout()
 fig.savefig(OUTPUTS / "viz_agreement_heatmap.png", dpi=150)
 plt.close(fig)

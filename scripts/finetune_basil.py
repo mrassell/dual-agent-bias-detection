@@ -17,7 +17,7 @@ Usage
 Env vars
 --------
     BASIL_DATA_DIR      path to BASIL *.json articles
-    AUDITOR_MODEL_ID    base checkpoint to fine-tune (default: roberta-babe-ft)
+    AUDITOR_MODEL_ID    required — base checkpoint to fine-tune (HF id or path)
     FT_EPOCHS           number of training epochs (default: 3)
     FT_BATCH_SIZE       per-device batch size (default: 16)
     FT_LR               learning rate (default: 2e-5)
@@ -54,7 +54,7 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 from mcp_server.basil_dataset import load_basil_sentences, split_sentence_frame
 from mcp_server.basil_paths import resolve_basil_data_dir
 
-BASE_MODEL = os.environ.get("AUDITOR_MODEL_ID", "mediabiasgroup/roberta-babe-ft").strip()
+BASE_MODEL = os.environ.get("AUDITOR_MODEL_ID", "").strip()
 EPOCHS = int(os.environ.get("FT_EPOCHS", "3"))
 BATCH_SIZE = int(os.environ.get("FT_BATCH_SIZE", "16"))
 LR = float(os.environ.get("FT_LR", "2e-5"))
@@ -109,6 +109,12 @@ def compute_metrics(eval_pred):
 
 
 def main() -> None:
+    if not BASE_MODEL:
+        print(
+            "ERROR: set AUDITOR_MODEL_ID to the base classifier checkpoint to fine-tune.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     try:
         data_dir = resolve_basil_data_dir()
     except FileNotFoundError as e:

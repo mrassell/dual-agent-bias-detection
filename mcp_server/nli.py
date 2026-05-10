@@ -1,4 +1,9 @@
-"""MNLI: premise vs hypothesis → supported or not (entailment vs contradiction)."""
+"""NLI verifier for MCP ``nli_check`` (model id from ``NLI_MODEL_NAME`` only).
+
+When ``hypothesis`` is empty/whitespace, ``nli_check`` runs a **fixed template
+pack** (lexical bias, informational bias, neutral reference) and aggregates
+entailment scores — verifier path for batch jobs that need an automatic bias read.
+"""
 
 from __future__ import annotations
 
@@ -9,11 +14,38 @@ import numpy as np
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-DEFAULT_NLI_MODEL_ID = "typeform/distilbert-base-uncased-mnli"
+# Explicit hypotheses for automatic bias verification (premise = sentence).
+EXPLICIT_BIAS_NLI_TEMPLATES: list[tuple[str, str]] = [
+    (
+        "lexical",
+        "The sentence uses loaded, slanted, or emotionally charged wording typical of biased news coverage.",
+    ),
+    (
+        "informational",
+        "The sentence omits important context or frames the story in a one-sided or misleading way.",
+    ),
+    (
+        "neutral_reference",
+        "The sentence is balanced, factual reporting without media bias or partisan framing.",
+    ),
+]
+
+# Shorter strings for scripts that loop pairwise (``run_full_eval``, etc.)
+BIAS_VERIFY_HYPOTHESES: list[str] = [t[1] for t in EXPLICIT_BIAS_NLI_TEMPLATES if t[0] != "neutral_reference"]
 
 _nli_tokenizer = None
 _nli_model = None
 _nli_device: torch.device | None = None
+
+
+def _require_nli_model_id() -> str:
+    name = os.environ.get("NLI_MODEL_NAME", "").strip()
+    if not name:
+        raise ValueError(
+            "Set NLI_MODEL_NAME to a Hugging Face sequence-classification NLI checkpoint "
+            "(no default is configured in code)."
+        )
+    return name
 
 
 def _softmax1d(logits: np.ndarray) -> np.ndarray:
@@ -41,7 +73,7 @@ def _load_nli() -> tuple[Any, Any, torch.device]:
     if _nli_tokenizer is not None and _nli_model is not None and _nli_device is not None:
         return _nli_tokenizer, _nli_model, _nli_device
 
-    name = os.environ.get("NLI_MODEL_NAME", DEFAULT_NLI_MODEL_ID).strip() or DEFAULT_NLI_MODEL_ID
+    name = _require_nli_model_id()
     tok = AutoTokenizer.from_pretrained(name)
     model = AutoModelForSequenceClassification.from_pretrained(name)
     model.eval()
@@ -59,21 +91,7 @@ def _load_nli() -> tuple[Any, Any, torch.device]:
     return tok, model, device
 
 
-def nli_check(premise: str, hypothesis: str) -> dict[str, Any]:
-    if not hypothesis.strip():
-        return {
-            "demo_title": "NLI: claim vs source",
-            "demo_readout": "No hypothesis text — nothing to check.",
-            "verdict": "N/A",
-            "rule": "Support if P(entailment) > P(contradiction).",
-            "claim_follows_from_premise": True,
-            "entailment_probability": 0.5,
-            "contradiction_probability": 0.0,
-            "neutral_probability": 0.5,
-            "predicted_label": "neutral",
-            "model": os.environ.get("NLI_MODEL_NAME", DEFAULT_NLI_MODEL_ID),
-        }
-
+def _forward_pair(premise: str, hypothesis: str) -> dict[str, Any]:
     tok, model, device = _load_nli()
     enc = tok(
         premise,
@@ -103,7 +121,73 @@ def nli_check(premise: str, hypothesis: str) -> dict[str, Any]:
         label = "neutral"
 
     follows = p_ent > p_con
+    return {
+        "entailment_probability": round(p_ent, 4),
+        "contradiction_probability": round(p_con, 4),
+        "neutral_probability": round(p_neu, 4),
+        "predicted_label": label,
+        "claim_follows_from_premise": follows,
+    }
+
+
+def nli_check_explicit_bias_pack(premise: str) -> dict[str, Any]:
+    """Run BART-MNLI on each explicit template; aggregate a bias-supported signal."""
+    per: dict[str, dict[str, Any]] = {}
+    bias_entails: list[float] = []
+    neutral_entail = 0.0
+    for key, hyp in EXPLICIT_BIAS_NLI_TEMPLATES:
+        out = _forward_pair(premise, hyp)
+        per[key] = out
+        if key == "neutral_reference":
+            neutral_entail = float(out["entailment_probability"])
+        else:
+            bias_entails.append(float(out["entailment_probability"]))
+
+    max_bias_entail = max(bias_entails) if bias_entails else 0.0
+    bias_cons = [
+        float(per[k]["contradiction_probability"])
+        for k in ("lexical", "informational")
+        if k in per
+    ]
+    max_bias_con = max(bias_cons) if bias_cons else 0.0
+    # Bias supported if a bias template entails more strongly than neutral reference.
+    margin = max_bias_entail - neutral_entail
+    bias_supported = margin > 0.02
+    verdict = (
+        "bias templates favored over neutral (NLI pack)"
+        if bias_supported
+        else "neutral template comparable or stronger (NLI pack)"
+    )
+
+    model_id = _require_nli_model_id()
+    return {
+        "demo_title": "NLI: explicit bias hypotheses",
+        "demo_readout": verdict,
+        "verdict": verdict,
+        "rule": "Support bias pack if max(entail_bias) > entail(neutral_reference) + 0.02.",
+        "claim_follows_from_premise": bias_supported,
+        "entailment_probability": round(max_bias_entail, 4),
+        "contradiction_probability": round(max_bias_con, 4),
+        "neutral_probability": round(neutral_entail, 4),
+        "predicted_label": "entailment" if bias_supported else "neutral",
+        "model": model_id,
+        "explicit_bias_margin": round(margin, 4),
+        "per_hypothesis": per,
+    }
+
+
+def nli_check(premise: str, hypothesis: str) -> dict[str, Any]:
+    """Premise vs hypothesis NLI, or **automatic explicit bias pack** if hypothesis is empty."""
+    if not hypothesis.strip():
+        return nli_check_explicit_bias_pack(premise)
+
+    out = _forward_pair(premise, hypothesis)
+    p_ent = out["entailment_probability"]
+    p_con = out["contradiction_probability"]
+    p_neu = out["neutral_probability"]
+    follows = bool(out["claim_follows_from_premise"])
     verdict = "supported (p_entail > p_contrad)" if follows else "not supported"
+    model_id = _require_nli_model_id()
 
     return {
         "demo_title": "NLI: claim vs source",
@@ -111,11 +195,11 @@ def nli_check(premise: str, hypothesis: str) -> dict[str, Any]:
         "verdict": verdict,
         "rule": "Support if P(entailment) > P(contradiction).",
         "claim_follows_from_premise": follows,
-        "entailment_probability": round(p_ent, 4),
-        "contradiction_probability": round(p_con, 4),
-        "neutral_probability": round(p_neu, 4),
-        "predicted_label": label,
-        "model": os.environ.get("NLI_MODEL_NAME", DEFAULT_NLI_MODEL_ID),
+        "entailment_probability": p_ent,
+        "contradiction_probability": p_con,
+        "neutral_probability": p_neu,
+        "predicted_label": out["predicted_label"],
+        "model": model_id,
     }
 
 
