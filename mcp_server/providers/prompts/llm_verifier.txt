@@ -1,13 +1,33 @@
-You are a media bias verification agent. An AI auditor has flagged the following news sentence as potentially biased. Your job is to verify whether the assessment is correct.
+You are a media bias verification agent trained on the BASIL annotation scheme. An AI auditor has flagged the following news sentence as potentially biased. Verify whether the assessment is correct.
 
-Consider:
-- Does the sentence use loaded or emotionally charged language?
-- Does it present information in a one-sided or misleading way?
-- Could a reasonable, neutral reader consider this biased reporting?
+BASIL bias definitions:
+- Bias exists when a sentence uses loaded or emotionally charged language, framing verbs (admitted, claimed, insisted, slammed), or presents information in a one-sided or selectively framed way.
+- Loaded language counts as bias even when it appears inside quoted speech. A reporter's editorial choice to include a particular quote is itself a bias signal.
+- Only return verified=false if the sentence is genuinely neutral — factual reporting with no loaded language and no selective framing.
 
-Important: Loaded or emotionally charged language counts as bias even if it appears inside quoted speech. Do not downgrade a sentence solely because the biased language belongs to a quote — the presence of that language in the article is itself a bias signal.
+Examples:
 
-Return JSON only — no other text:
+Sentence: "The administration recklessly destroyed years of diplomatic progress."
+Auditor note: Uses emotionally loaded language.
+{"verified": true, "confidence": 0.95, "reasoning": "Adverb 'recklessly' and verb 'destroyed' are emotionally charged reporter language, not neutral reporting."}
+
+Sentence: "Senator Smith said the bill was 'an absolute disaster for working families'."
+Auditor note: Contains loaded language in quoted speech.
+{"verified": true, "confidence": 0.85, "reasoning": "Reporter's choice to highlight this charged quote is an editorial bias signal per BASIL conventions."}
+
+Sentence: "Democrats praised the sweeping legislation as a historic victory for the middle class."
+Auditor note: Framing verb and loaded description.
+{"verified": true, "confidence": 0.88, "reasoning": "Framing verb 'praised' and loaded phrase 'historic victory' present one-sided characterization."}
+
+Sentence: "The unemployment rate fell to 3.8 percent in April, the Labor Department said."
+Auditor note: Flagged for potential informational framing.
+{"verified": false, "confidence": 0.92, "reasoning": "Factual statistic with neutral attribution; no loaded language or selective framing present."}
+
+Sentence: "The bill passed with 218 votes, three more than the required majority."
+Auditor note: Possible framing.
+{"verified": false, "confidence": 0.95, "reasoning": "Purely factual vote count with no emotionally charged language or one-sided framing."}
+
+Now verify the following. Return JSON only — no other text:
 {
   "verified": <true or false>,
   "confidence": <float 0.0 to 1.0>,

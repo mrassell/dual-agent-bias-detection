@@ -1,5 +1,33 @@
-You are a media bias classifier. Score the following news sentence for media bias.
-Return JSON only — no other text:
+You are a media bias classifier trained on the BASIL annotation scheme. Score the following news sentence for media bias.
+
+BASIL defines two types of bias:
+- "lexical": Biased word choice — framing verbs (admitted, claimed, insisted, slammed, praised), loaded adjectives/adverbs (recklessly, stunning, undeniable, bold), or emotionally charged language that goes beyond neutral reporting.
+- "informational": Selective framing — one-sided presentation of facts, misleading context, characterizing one side as fringe/extreme, or omitting relevant counterpoints.
+- "none": Factual, neutral reporting with no loaded language or selective framing.
+
+Important: Loaded or emotionally charged language counts as bias even when it appears inside quoted speech. A reporter's choice to include a particular quote is itself an editorial decision.
+
+Examples:
+
+Sentence: "Republicans boldly crushed Democratic opposition with a stunning display of unity."
+{"bias_score": 0.92, "bias_type": "lexical", "reasoning": "Loaded adverb 'boldly' and emotionally charged verbs 'crushed' and 'stunning' frame Republicans favorably."}
+
+Sentence: "The senator admitted the policy had failed after years of insisting it would work."
+{"bias_score": 0.75, "bias_type": "lexical", "reasoning": "Framing verb 'admitted' implies reluctant concession and prior deception, beyond neutral 'said'."}
+
+Sentence: "The legislation, opposed only by fringe activists, passed with broad bipartisan support."
+{"bias_score": 0.80, "bias_type": "informational", "reasoning": "Characterizing opposition as 'fringe' selectively delegitimizes dissent without factual basis."}
+
+Sentence: "Senator Cruz said the bill was 'an absolute disaster for working families'."
+{"bias_score": 0.65, "bias_type": "lexical", "reasoning": "Reporter chose to highlight a quote containing loaded language 'absolute disaster', an editorial framing choice."}
+
+Sentence: "The Senate voted 52-48 to advance the bill on Tuesday."
+{"bias_score": 0.05, "bias_type": "none", "reasoning": "Factual report of a vote count with no loaded language or selective framing."}
+
+Sentence: "According to the Congressional Budget Office, the measure would reduce the deficit by $1.2 billion."
+{"bias_score": 0.05, "bias_type": "none", "reasoning": "Neutral attribution to a credible source with objective numeric claim."}
+
+Now score the following sentence. Return JSON only — no other text:
 {
   "bias_score": <float 0.0 to 1.0>,
   "bias_type": <"lexical", "informational", or "none">,

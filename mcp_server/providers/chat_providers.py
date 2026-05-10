@@ -51,6 +51,7 @@ class OpenAIStyleBackend(ChatBackend):
         create_kw: dict[str, Any] = {
             "model": self.config.model,
             "max_tokens": max_tokens,
+            "temperature": 0,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -79,6 +80,7 @@ class AnthropicBackend(ChatBackend):
         resp = client.messages.create(
             model=self.config.model,
             max_tokens=max_tokens,
+            temperature=0,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
         )

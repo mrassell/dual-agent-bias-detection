@@ -58,7 +58,7 @@ def run_llm_bias_score(
     raw = backend.complete(
         system,
         f"Sentence: {sentence}",
-        max_tokens=300,
+        max_tokens=400,
         json_object=want_json,
     )
     data = _parse_llm_json(raw)
@@ -106,7 +106,7 @@ def run_llm_verify(
     raw = backend.complete(
         system,
         user_msg,
-        max_tokens=300,
+        max_tokens=400,
         json_object=want_json,
     )
     data = _parse_llm_json(raw)
