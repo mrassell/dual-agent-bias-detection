@@ -34,6 +34,13 @@ const PIPELINE_OPTIONS = [
     verifier: "claude-haiku-4-5-20251001"
   }
 ];
+const PIPELINE_MODE_MAP = {
+  gpt_to_claude: "gpt-claude",
+  claude_to_gpt: "claude-gpt",
+  gpt_only:      "gpt-only",
+  claude_only:   "claude-only"
+};
+
 const BASELINE_MODEL = "roberta-babe-basil-ft";
 const BIAS_RULES = [
   {
@@ -370,26 +377,30 @@ function App() {
     }
 
     try {
-      const responses = await Promise.all(
-        sentences.map(async (sentence) => {
-          const response = await fetch(`${API_BASE_URL}/detect_bias`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              sentence,
-              pipeline_id: activePipeline.id,
-              auditor_model: activePipeline.auditor,
-              verifier_model: activePipeline.verifier,
-              baseline_model: BASELINE_MODEL,
-              stability: enableStability
-            })
-          });
-          if (!response.ok) {
-            throw new Error(`API request failed with status ${response.status}`);
-          }
-          return response.json();
+      const response = await fetch(`${API_BASE_URL}/api/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text,
+          mode: PIPELINE_MODE_MAP[pipelineId] || "gpt-claude"
         })
-      );
+      });
+      if (!response.ok) {
+        throw new Error(`API request failed with status ${response.status}`);
+      }
+      const data = await response.json();
+      const responses = (data.results || []).map((r) => ({
+        sentence:          r.sentence,
+        lexical_score:     Number((r.auditor?.bias_score ?? 0).toFixed(2)),
+        contextual_score:  Number((r.verifier?.confidence ?? 0).toFixed(2)),
+        overall_bias_score: Number((r.auditor?.bias_score ?? 0).toFixed(2)),
+        likely_bias:       r.status === "confirmed" || r.status === "auditor_flagged",
+        status:            r.status,
+        bias_type:         r.auditor?.bias_type ?? "none",
+        reasoning:         r.auditor?.reasoning ?? "",
+        highlighted_terms: r.auditor?.biased_phrases ?? [],
+        bias_types:        r.auditor?.bias_type ? [r.auditor.bias_type] : []
+      }));
       setResults(responses);
       setStatus("done");
       setToolLogs((previous) => [
@@ -641,10 +652,10 @@ function App() {
               <thead>
                 <tr>
                   <th>Sentence</th>
-                  <th>Lexical</th>
-                  <th>Context</th>
-                  <th>Overall</th>
-                  <th>Flag</th>
+                  <th>Auditor Score</th>
+                  <th>Verifier Conf.</th>
+                  <th>Bias Type</th>
+                  <th>Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -659,15 +670,21 @@ function App() {
                     <tr key={`${row.sentence}-${index}`}>
                       <td>{row.sentence}</td>
                       <td>{row.lexical_score ?? "-"}</td>
-                      <td>{row.contextual_score ?? "-"}</td>
-                      <td>{row.overall_bias_score ?? "-"}</td>
+                      <td>{row.contextual_score != null ? row.contextual_score : "-"}</td>
+                      <td>{row.bias_type ?? "-"}</td>
                       <td>
                         <span
                           className={
-                            row.likely_bias ? "status-chip danger" : "status-chip safe"
+                            row.status === "confirmed"
+                              ? "status-chip danger"
+                              : row.status === "auditor_flagged"
+                              ? "status-chip warn"
+                              : row.status === "downgraded"
+                              ? "status-chip muted"
+                              : "status-chip safe"
                           }
                         >
-                          {row.likely_bias ? "Likely bias" : "Low bias"}
+                          {row.status ?? "clean"}
                         </span>
                       </td>
                     </tr>
