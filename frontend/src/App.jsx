@@ -8,12 +8,9 @@ const DEMO_SENTENCES = [
   "The senator boldly crushed opponents with a stunning and undeniable argument.",
   "The report cites multiple sources and avoids emotionally charged language."
 ];
-const MODEL_OPTIONS = [
-  "RoBERTa-BABE",
-  "DeBERTa-v3 Bias",
-  "Gemini 1.5 Flash (prompted)",
-  "Claude 3.5 Sonnet (prompted)"
-];
+const AUDITOR_MODEL_OPTIONS = ["gpt-4o-mini"];
+const VERIFIER_MODEL_OPTIONS = ["claude-haiku-4-5-20251001"];
+const BASELINE_MODEL = "roberta-babe-basil-ft";
 
 function scoreSentence(sentence) {
   const emotionalWords = [
@@ -74,7 +71,8 @@ function downloadFile(content, fileName, mimeType) {
 
 function App() {
   const [activeTab, setActiveTab] = useState("analyze");
-  const [modelName, setModelName] = useState(MODEL_OPTIONS[0]);
+  const [auditorModelName] = useState(AUDITOR_MODEL_OPTIONS[0]);
+  const [verifierModelName] = useState(VERIFIER_MODEL_OPTIONS[0]);
   const [enableStability, setEnableStability] = useState(true);
   const [uploadedFileName, setUploadedFileName] = useState("");
   const [text, setText] = useState(DEMO_SENTENCES.join(" "));
@@ -83,7 +81,7 @@ function App() {
   const [error, setError] = useState("");
   const [toolLogs, setToolLogs] = useState([
     "[12:03:08] session_started: demo pipeline initialized",
-    "[12:03:10] model_loaded: RoBERTa-BABE (demo mode)",
+    `[12:03:10] models_loaded: auditor=${AUDITOR_MODEL_OPTIONS[0]}, verifier=${VERIFIER_MODEL_OPTIONS[0]}, baseline=${BASELINE_MODEL}`,
     "[12:03:15] waiting_for_input: ready"
   ]);
 
@@ -168,7 +166,7 @@ function App() {
 
     setToolLogs((previous) => [
       ...previous,
-      `[${new Date().toLocaleTimeString()}] detect_bias_started: ${sentences.length} sentence(s), model=${modelName}`,
+      `[${new Date().toLocaleTimeString()}] detect_bias_started: ${sentences.length} sentence(s), auditor=${auditorModelName}, verifier=${verifierModelName}, baseline=${BASELINE_MODEL}`,
       enableStability
         ? `[${new Date().toLocaleTimeString()}] stability_enabled: running drift probes`
         : `[${new Date().toLocaleTimeString()}] stability_disabled: skipped`
@@ -191,7 +189,13 @@ function App() {
           const response = await fetch(`${API_BASE_URL}/detect_bias`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sentence, model: modelName, stability: enableStability })
+            body: JSON.stringify({
+              sentence,
+              auditor_model: auditorModelName,
+              verifier_model: verifierModelName,
+              baseline_model: BASELINE_MODEL,
+              stability: enableStability
+            })
           });
           if (!response.ok) {
             throw new Error(`API request failed with status ${response.status}`);
@@ -241,7 +245,11 @@ function App() {
 
   const exportResultsJson = () => {
     const payload = {
-      model: modelName,
+      models: {
+        auditor: auditorModelName,
+        verifier: verifierModelName,
+        baseline: BASELINE_MODEL
+      },
       stability_enabled: enableStability,
       summary,
       results
@@ -340,18 +348,32 @@ function App() {
             </div>
             <div>
               <h2>Model Settings</h2>
-              <label htmlFor="model-select">Select Model</label>
+              <label htmlFor="auditor-model-select">Auditor Model</label>
               <select
-                id="model-select"
-                value={modelName}
-                onChange={(event) => setModelName(event.target.value)}
+                id="auditor-model-select"
+                value={auditorModelName}
+                disabled
               >
-                {MODEL_OPTIONS.map((option) => (
+                {AUDITOR_MODEL_OPTIONS.map((option) => (
                   <option key={option} value={option}>
                     {option}
                   </option>
                 ))}
               </select>
+              <label htmlFor="verifier-model-select">Verifier Model</label>
+              <select
+                id="verifier-model-select"
+                value={verifierModelName}
+                disabled
+              >
+                {VERIFIER_MODEL_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+              <label>Baseline Comparison</label>
+              <p className="subdued baseline-model">{BASELINE_MODEL}</p>
               <label className="checkbox-row">
                 <input
                   type="checkbox"
