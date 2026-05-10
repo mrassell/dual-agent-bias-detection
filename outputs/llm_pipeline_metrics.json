@@ -1,0 +1,51 @@
+{
+  "auditor_model": "gpt-4o-mini",
+  "verifier_model": "claude-haiku-4-5-20251001",
+  "threshold": 0.4,
+  "verify_threshold": 0.5,
+  "sample_size": 201,
+  "auditor_only": {
+    "label": "auditor_only (GPT)",
+    "sentence_count": 201,
+    "accuracy": 0.781095,
+    "precision": 0.447368,
+    "recall": 0.425,
+    "f1_macro": 0.650047,
+    "positive_rate": 0.189055
+  },
+  "pipeline": {
+    "label": "pipeline (GPT\u2192Claude)",
+    "sentence_count": 201,
+    "accuracy": 0.776119,
+    "precision": 0.413793,
+    "recall": 0.3,
+    "f1_macro": 0.606345,
+    "positive_rate": 0.144279
+  },
+  "verifier_calls": 38,
+  "verifier_downgrades": 9,
+  "revision_rate": 0.044776,
+  "outlet_breakdown": {
+    "fox": {
+      "sentence_count": 67,
+      "auditor_f1": 0.7272,
+      "pipeline_f1": 0.684,
+      "verifier_calls": 16,
+      "downgrades": 3
+    },
+    "hpo": {
+      "sentence_count": 67,
+      "auditor_f1": 0.5939,
+      "pipeline_f1": 0.6063,
+      "verifier_calls": 11,
+      "downgrades": 1
+    },
+    "nyt": {
+      "sentence_count": 67,
+      "auditor_f1": 0.6063,
+      "pipeline_f1": 0.4866,
+      "verifier_calls": 11,
+      "downgrades": 5
+    }
+  }
+}

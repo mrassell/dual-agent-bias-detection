@@ -1,0 +1,37 @@
+{
+  "gpt_model": "gpt-4o-mini",
+  "claude_model": "claude-haiku-4-5-20251001",
+  "threshold": 0.4,
+  "sample_size": 201,
+  "agreement_rate": 0.870647,
+  "disagreement_rate": 0.129353,
+  "disagreement_count": 26,
+  "cohen_kappa": 0.610813,
+  "pearson_r": 0.75776,
+  "pearson_p_value": 0.0,
+  "gpt_positive_rate": 0.179104,
+  "claude_positive_rate": 0.238806,
+  "outlet_breakdown": {
+    "fox": {
+      "sentence_count": 67,
+      "agreement_rate": 0.8209,
+      "disagreement_count": 12,
+      "gpt_positive_rate": 0.2687,
+      "claude_positive_rate": 0.2985
+    },
+    "hpo": {
+      "sentence_count": 67,
+      "agreement_rate": 0.8806,
+      "disagreement_count": 8,
+      "gpt_positive_rate": 0.1343,
+      "claude_positive_rate": 0.194
+    },
+    "nyt": {
+      "sentence_count": 67,
+      "agreement_rate": 0.9104,
+      "disagreement_count": 6,
+      "gpt_positive_rate": 0.1343,
+      "claude_positive_rate": 0.2239
+    }
+  }
+}

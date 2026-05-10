@@ -1,0 +1,44 @@
+{
+  "sentence_count": 1657,
+  "gold_positive_rate": 0.20338,
+  "predicted_positive_rate": 0.284852,
+  "accuracy": 0.782136,
+  "precision": 0.474576,
+  "recall": 0.664688,
+  "f1_macro": 0.704829,
+  "mae": 0.275377,
+  "threshold": 0.4,
+  "auditor_model": "/Users/ryanb/Desktop/hwspring2026/advtopics/dual-agent-bias-detection/outputs/roberta-babe-basil-ft",
+  "outlet_breakdown": {
+    "fox": {
+      "sentence_count": 552,
+      "gold_positive_rate": 0.201087,
+      "predicted_positive_rate": 0.278986,
+      "accuracy": 0.806159,
+      "precision": 0.512987,
+      "recall": 0.711712,
+      "f1_macro": 0.734347,
+      "mae": 0.257436
+    },
+    "hpo": {
+      "sentence_count": 487,
+      "gold_positive_rate": 0.211499,
+      "predicted_positive_rate": 0.289528,
+      "accuracy": 0.798768,
+      "precision": 0.51773,
+      "recall": 0.708738,
+      "f1_macro": 0.732057,
+      "mae": 0.260683
+    },
+    "nyt": {
+      "sentence_count": 618,
+      "gold_positive_rate": 0.199029,
+      "predicted_positive_rate": 0.286408,
+      "accuracy": 0.747573,
+      "precision": 0.40678,
+      "recall": 0.585366,
+      "f1_macro": 0.656667,
+      "mae": 0.302981
+    }
+  }
+}
