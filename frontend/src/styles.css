@@ -107,6 +107,11 @@ select {
   font-size: 0.92rem;
 }
 
+select:disabled {
+  opacity: 0.9;
+  cursor: not-allowed;
+}
+
 textarea {
   width: 100%;
   min-height: 180px;
@@ -182,6 +187,16 @@ button:disabled {
 .subdued {
   color: #a9b8e9;
   font-size: 0.9rem;
+}
+
+.baseline-model {
+  margin-top: -0.15rem;
+  margin-bottom: 0.5rem;
+  padding: 0.45rem 0.58rem;
+  border-radius: 10px;
+  border: 1px solid #3b4a77;
+  background: #0f1730;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .results-header {
