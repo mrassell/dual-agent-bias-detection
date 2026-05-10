@@ -59,3 +59,29 @@ python secondary_verifier.py \
   --output-jsonl /path/to/secondary_verifier_predictions.jsonl \
   --summary-json /path/to/secondary_verifier_summary.json
 ```
+
+## Frontend (deploy now, backend later)
+
+A standalone React frontend is available in `frontend/`.
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The UI works in demo mode by default. Once your API is ready, set:
+
+```bash
+VITE_API_BASE_URL=https://your-api-domain.com
+```
+
+### Railway setup (frontend-only)
+
+Create a new Railway service from this repository and set:
+
+- Root Directory: `frontend`
+- Build Command: `npm run build`
+- Start Command: `npm run start`
+
+This lets you host a live frontend immediately, without deploying backend services yet.
