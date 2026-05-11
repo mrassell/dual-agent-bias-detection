@@ -1,5 +1,11 @@
 # dual-agent-bias-detection
 
+## 🚀 Live Demo
+
+**[https://dual-agent-bias-detection.vercel.app](https://dual-agent-bias-detection.vercel.app)**
+
+Frontend hosted on Vercel · Backend API hosted on Railway
+
 ## MCP server (BASIL-backed)
 
 ```bash
