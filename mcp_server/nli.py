@@ -11,8 +11,6 @@ import os
 from typing import Any
 
 import numpy as np
-import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 # Explicit hypotheses for automatic bias verification (premise = sentence).
 EXPLICIT_BIAS_NLI_TEMPLATES: list[tuple[str, str]] = [
@@ -35,7 +33,7 @@ BIAS_VERIFY_HYPOTHESES: list[str] = [t[1] for t in EXPLICIT_BIAS_NLI_TEMPLATES i
 
 _nli_tokenizer = None
 _nli_model = None
-_nli_device: torch.device | None = None
+_nli_device = None
 
 
 def _require_nli_model_id() -> str:
@@ -68,10 +66,19 @@ def _label_probs(probs: np.ndarray, id2label: dict[int, str]) -> dict[str, float
     return out
 
 
-def _load_nli() -> tuple[Any, Any, torch.device]:
+def _load_nli() -> tuple[Any, Any, Any]:
     global _nli_tokenizer, _nli_model, _nli_device
     if _nli_tokenizer is not None and _nli_model is not None and _nli_device is not None:
         return _nli_tokenizer, _nli_model, _nli_device
+
+    try:
+        import torch
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    except ImportError as e:
+        raise ImportError(
+            "torch and transformers are required for NLI. "
+            "Install them with: pip install torch transformers"
+        ) from e
 
     name = _require_nli_model_id()
     tok = AutoTokenizer.from_pretrained(name)
@@ -100,6 +107,7 @@ def _forward_pair(premise: str, hypothesis: str) -> dict[str, Any]:
         max_length=512,
         return_tensors="pt",
     )
+    import torch
     enc = {k: v.to(device) for k, v in enc.items()}
     with torch.no_grad():
         logits = model(**enc).logits.float().cpu().numpy()[0]
