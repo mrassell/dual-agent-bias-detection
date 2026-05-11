@@ -6,8 +6,6 @@ import os
 from typing import Any
 
 import numpy as np
-import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 MAX_LENGTH = 256
 
@@ -33,6 +31,14 @@ class LexicalBiasAuditor:
     """Binary classifier: neutral vs lexical bias (BABE checkpoint)."""
 
     def __init__(self, model_id: str | None = None) -> None:
+        try:
+            import torch
+            from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        except ImportError as e:
+            raise ImportError(
+                "torch and transformers are required for the RoBERTa auditor. "
+                "Install them with: pip install torch transformers"
+            ) from e
         self.model_id = _resolve_auditor_model_id(model_id)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
         self.model = AutoModelForSequenceClassification.from_pretrained(self.model_id)
@@ -49,6 +55,7 @@ class LexicalBiasAuditor:
             raise ValueError(f"Expected 2 labels, got {self.model.config.num_labels}")
 
     def predict_batch(self, texts: list[str]) -> list[dict[str, Any]]:
+        import torch
         if not texts:
             return []
         enc = self.tokenizer(

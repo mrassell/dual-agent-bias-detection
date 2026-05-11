@@ -1,0 +1,11 @@
+# Lightweight requirements for Railway deployment (demo server only).
+# Does NOT include torch/transformers — the demo uses cloud LLM APIs only.
+flask>=3.0
+flask-cors>=4.0
+openai>=1.0
+anthropic>=0.40
+mcp[cli]>=1.0
+pydantic>=2
+numpy
+pandas>=2.0
+scikit-learn>=1.3
