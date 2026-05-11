@@ -221,8 +221,9 @@ def health():
 
 if __name__ == "__main__":
     init_db()
+    port = int(os.environ.get("PORT", 5001))
     print(f"Threshold: {THRESHOLD}")
     print(f"Slot {SLOT_PRIMARY} (gpt / first): {_slot_label(SLOT_PRIMARY)}")
     print(f"Slot {SLOT_SECONDARY} (claude / second): {_slot_label(SLOT_SECONDARY)}")
-    print("Starting server on http://localhost:5001")
-    app.run(host="0.0.0.0", port=5001, debug=False)
+    print(f"Starting server on http://0.0.0.0:{port}")
+    app.run(host="0.0.0.0", port=port, debug=False)

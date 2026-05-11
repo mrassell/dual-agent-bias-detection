@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || "";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || `http://${window.location.hostname}:5001`;
 const TABS = ["analyze", "dashboard", "baseline", "verification", "logs"];
 const DEMO_SENTENCES = [
   "Officials insisted that the policy was a complete success despite visible setbacks.",

@@ -69,6 +69,7 @@ def _metrics(y_true, y_pred, label: str) -> dict:
         "accuracy": round(float(accuracy_score(y_true, y_pred)), 6),
         "precision": round(float(precision_score(y_true, y_pred, zero_division=0)), 6),
         "recall": round(float(recall_score(y_true, y_pred, zero_division=0)), 6),
+        "f1_binary": round(float(f1_score(y_true, y_pred, average="binary", zero_division=0)), 6),
         "f1_macro": round(float(f1_score(y_true, y_pred, average="macro", zero_division=0)), 6),
         "positive_rate": round(float(y_pred.mean()), 6),
     }
@@ -215,8 +216,14 @@ def main() -> None:
             "auditor_f1": round(
                 float(f1_score(grp["gold"], grp["auditor_pred"], average="macro", zero_division=0)), 4
             ),
+            "auditor_f1_binary": round(
+                float(f1_score(grp["gold"], grp["auditor_pred"], average="binary", zero_division=0)), 4
+            ),
             "pipeline_f1": round(
                 float(f1_score(grp["gold"], grp["final_pred"], average="macro", zero_division=0)), 4
+            ),
+            "pipeline_f1_binary": round(
+                float(f1_score(grp["gold"], grp["final_pred"], average="binary", zero_division=0)), 4
             ),
             "verifier_calls": int((grp["verifier_verdict"] != "skipped").sum()),
             "downgrades": int((grp["verifier_verdict"] == "downgraded").sum()),
@@ -253,7 +260,7 @@ def main() -> None:
     print("\n" + "=" * 60)
     print("LLM PIPELINE (bias_surface + SQLite audit per call)")
     print("=" * 60)
-    for key in ["accuracy", "precision", "recall", "f1_macro"]:
+    for key in ["accuracy", "precision", "recall", "f1_binary", "f1_macro"]:
         print(f"  {key}: auditor {aud_metrics[key]:.4f}  pipeline {final_metrics[key]:.4f}")
     print(f"\nVerifier downgrades: {verifier_downgrades} / {len(rows)}")
 

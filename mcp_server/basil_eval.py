@@ -60,6 +60,7 @@ def run_basil_evaluation(
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "precision": float(precision_score(y_true, y_pred, zero_division=0)),
         "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "f1_binary": float(f1_score(y_true, y_pred, average="binary", zero_division=0)),
         "f1_macro": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
         "mae_score_vs_gold_binary": float(mae),
     }
@@ -81,6 +82,7 @@ def run_basil_evaluation(
             "accuracy": float(accuracy_score(g_true, g_pred)),
             "precision": float(precision_score(g_true, g_pred, zero_division=0)),
             "recall": float(recall_score(g_true, g_pred, zero_division=0)),
+            "f1_binary": float(f1_score(g_true, g_pred, average="binary", zero_division=0)),
             "f1_macro": float(f1_score(g_true, g_pred, average="macro", zero_division=0)),
             "mae_score_vs_gold_binary": float(mean_absolute_error(g_true.astype(np.float64), g_score)),
         }

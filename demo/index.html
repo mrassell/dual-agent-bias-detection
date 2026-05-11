@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dual-Agent Bias Detector</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; background: #0f1117; color: #e2e8f0; }
+
+    /* Word/phrase highlight colors — one per model */
+    /* GPT-4o-mini flagged (orange) */
+    .ph-gpt      { background: rgba(249,115,22,0.35); border-bottom: 2px solid #f97316;
+                   border-radius: 3px; padding: 1px 2px; cursor: pointer; font-weight: 600; }
+    /* Claude confirmed (red) */
+    .ph-claude   { background: rgba(239,68,68,0.40);  border-bottom: 2px solid #ef4444;
+                   border-radius: 3px; padding: 1px 2px; cursor: pointer; font-weight: 700; }
+    /* Both GPT + Claude agree (red + orange glow — strongest signal) */
+    .ph-both     { background: rgba(239,68,68,0.55);  border-bottom: 3px solid #ef4444;
+                   border-radius: 3px; padding: 1px 3px; cursor: pointer; font-weight: 700;
+                   box-shadow: 0 0 6px rgba(249,115,22,0.5); }
+    /* GPT flagged but Claude downgraded (yellow dashed — false positive caught) */
+    .ph-downgraded { background: rgba(234,179,8,0.25); border-bottom: 2px dashed #eab308;
+                     border-radius: 3px; padding: 1px 2px; cursor: pointer; }
+    /* RoBERTa baseline flagged (purple) */
+    .ph-roberta  { background: rgba(139,92,246,0.30); border-bottom: 2px solid #8b5cf6;
+                   border-radius: 3px; padding: 1px 2px; cursor: pointer; }
+
+    .tooltip { position: absolute; z-index: 50; max-width: 320px; background: #1e2433; border: 1px solid #374151; border-radius: 8px; padding: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); font-size: 13px; }
+    .tab-active   { border-bottom: 2px solid #6366f1; color: #818cf8; }
+    .tab-inactive { border-bottom: 2px solid transparent; color: #6b7280; }
+    .log-row:nth-child(odd) { background: #1a1f2e; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #1a1f2e; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+const API = "http://localhost:5001";
+
+// ── Word-level multi-model highlight engine ────────────────────────
+//
+// For each character position in the sentence we track which models
+// flagged it, then wrap runs of characters in the right CSS class:
+//   ph-both      → GPT + Claude both flagged (strongest)
+//   ph-claude    → Claude confirmed only
+//   ph-gpt       → GPT flagged, Claude not called / no opinion
+//   ph-downgraded→ GPT flagged, Claude downgraded (false positive)
+//   ph-roberta   → RoBERTa flagged (sentence-level, whole sentence)
+//
+function buildHighlightedHTML(sentence, item) {
+  const gptPhrases    = item.auditor?.biased_phrases  || [];
+  const claudePhrases = item.verifier?.biased_phrases || [];
+  const status        = item.status;
+
+  // Build char-level flag arrays
+  const n      = sentence.length;
+  const byGPT    = new Uint8Array(n);
+  const byClaude = new Uint8Array(n);
+
+  const markRange = (arr, phrase) => {
+    if (!phrase) return;
+    const re = new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    let m;
+    while ((m = re.exec(sentence)) !== null) {
+      for (let i = m.index; i < m.index + m[0].length; i++) arr[i] = 1;
+    }
+  };
+
+  gptPhrases.forEach(p => markRange(byGPT, p));
+  claudePhrases.forEach(p => markRange(byClaude, p));
+
+  // If no phrase-level data but sentence is flagged, mark whole sentence
+  if (status !== "clean" && status !== "skipped") {
+    if (gptPhrases.length === 0 && byGPT.every(v => v === 0)) byGPT.fill(1);
+  }
+
+  // Build HTML spans by walking character runs
+  let html = "";
+  let i = 0;
+  while (i < n) {
+    const g = byGPT[i], c = byClaude[i];
+    let cls = null;
+    if (g && c)                          cls = "ph-both";
+    else if (c)                          cls = "ph-claude";
+    else if (g && status === "confirmed") cls = "ph-gpt";
+    else if (g && status === "downgraded")cls = "ph-downgraded";
+    else if (g)                          cls = "ph-gpt";
+
+    if (!cls) { html += sentence[i++]; continue; }
+
+    // Collect the full run of same classification
+    let j = i + 1;
+    while (j < n && byGPT[j] === g && byClaude[j] === c) j++;
+    const chunk = sentence.slice(i, j).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    html += `<span class="${cls}">${chunk}</span>`;
+    i = j;
+  }
+  return html;
+}
+
+// ── Sentence component ─────────────────────────────────────────────
+function SentenceSpan({ item }) {
+  const [tooltip, setTooltip] = useState(null);
+  const spanRef = useRef(null);
+
+  if (item.status === "clean" || item.status === "skipped") {
+    return <span>{item.sentence} </span>;
+  }
+
+  const html = buildHighlightedHTML(item.sentence, item);
+
+  const handleClick = (e) => {
+    e.stopPropagation();
+    if (tooltip) { setTooltip(null); return; }
+    const rect = spanRef.current.getBoundingClientRect();
+    setTooltip({ x: rect.left, y: rect.bottom + window.scrollY + 4 });
+  };
+
+  const statusLabel = {
+    confirmed:      { text: "Confirmed Bias",  color: "bg-red-900 text-red-300" },
+    downgraded:     { text: "False Positive",  color: "bg-yellow-900 text-yellow-300" },
+    auditor_flagged:{ text: "GPT Flagged",     color: "bg-orange-900 text-orange-300" },
+  }[item.status] || { text: item.status, color: "bg-gray-800 text-gray-300" };
+
+  return (
+    <>
+      <span ref={spanRef} onClick={handleClick} style={{ cursor: "pointer" }}
+            dangerouslySetInnerHTML={{ __html: html }} />
+      {' '}
+      {tooltip && (
+        <div
+          className="tooltip"
+          style={{ left: Math.min(tooltip.x, window.innerWidth - 340), top: tooltip.y }}
+          onClick={e => e.stopPropagation()}
+        >
+          <div className="flex justify-between items-start mb-2">
+            <span className={`text-xs font-bold px-2 py-0.5 rounded ${statusLabel.color}`}>
+              {statusLabel.text}
+            </span>
+            <button onClick={() => setTooltip(null)} className="text-gray-500 hover:text-gray-300 text-xs">✕</button>
+          </div>
+          <div className="space-y-2 text-xs">
+            <div>
+              <span className="text-orange-400 font-semibold">GPT-4o-mini (Auditor)</span>
+              <div className="text-gray-300 mt-0.5">
+                Score: <b>{item.auditor?.bias_score?.toFixed(2)}</b> · Type: <b>{item.auditor?.bias_type}</b>
+              </div>
+              <div className="text-gray-400 italic mt-0.5">"{item.auditor?.reasoning}"</div>
+              {item.auditor?.biased_phrases?.length > 0 && (
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {item.auditor.biased_phrases.map((p, i) => (
+                    <span key={i} className="bg-orange-900/50 text-orange-300 px-1.5 py-0.5 rounded text-xs">{p}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+            {item.verifier && (
+              <div className="border-t border-gray-700 pt-2">
+                <span className="text-purple-400 font-semibold">Claude-haiku (Verifier)</span>
+                <div className="text-gray-300 mt-0.5">
+                  Verified: <b className={item.verifier.verified ? "text-red-400" : "text-green-400"}>
+                    {item.verifier.verified ? "Yes" : "No"}
+                  </b> · Confidence: <b>{item.verifier.confidence?.toFixed(2)}</b>
+                </div>
+                <div className="text-gray-400 italic mt-0.5">"{item.verifier.reasoning}"</div>
+                {item.verifier?.biased_phrases?.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {item.verifier.biased_phrases.map((p, i) => (
+                      <span key={i} className="bg-red-900/50 text-red-300 px-1.5 py-0.5 rounded text-xs">{p}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ── Article Panel ──────────────────────────────────────────────────
+function ArticlePanel({ onResults }) {
+  const [text, setText] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [results, setResults] = useState(null);
+  const [stats, setStats] = useState(null);
+
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => setText(ev.target.result);
+    reader.readAsText(file);
+  };
+
+  const analyze = async () => {
+    if (!text.trim()) return;
+    setLoading(true);
+    setError(null);
+    setResults(null);
+    try {
+      const res = await fetch(`${API}/api/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setResults(data.results);
+      const confirmed  = data.results.filter(r => r.status === "confirmed").length;
+      const downgraded = data.results.filter(r => r.status === "downgraded").length;
+      const auditorOnly= data.results.filter(r => r.status === "auditor_flagged").length;
+      setStats({ total: data.sentence_count, confirmed, downgraded, auditorOnly });
+      onResults();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-full gap-4">
+      {/* Input area */}
+      <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+        <div className="flex justify-between items-center mb-3">
+          <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Article Input</h2>
+          <label className="cursor-pointer text-xs text-indigo-400 hover:text-indigo-300 border border-indigo-800 px-2 py-1 rounded">
+            Upload .txt
+            <input type="file" accept=".txt" className="hidden" onChange={handleFile} />
+          </label>
+        </div>
+        <textarea
+          className="w-full bg-gray-800 text-gray-200 text-sm rounded-lg p-3 border border-gray-700 focus:outline-none focus:border-indigo-500 resize-none"
+          rows={6}
+          placeholder="Paste a news article here, or upload a .txt file..."
+          value={text}
+          onChange={e => setText(e.target.value)}
+        />
+        <button
+          onClick={analyze}
+          disabled={loading || !text.trim()}
+          className="mt-3 w-full py-2.5 rounded-lg font-semibold text-sm transition-all
+                     bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-700 disabled:text-gray-500
+                     disabled:cursor-not-allowed"
+        >
+          {loading ? (
+            <span className="flex items-center justify-center gap-2">
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+              </svg>
+              Analyzing…
+            </span>
+          ) : "Analyze Article"}
+        </button>
+        {error && <p className="mt-2 text-red-400 text-xs">{error}</p>}
+      </div>
+
+      {/* Legend */}
+      <div className="flex flex-wrap gap-3 text-xs text-gray-400">
+        <span className="flex items-center gap-1.5">
+          <span className="ph-gpt px-2 py-0.5 rounded text-xs">word</span>
+          <span>GPT-4o-mini flagged</span>
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="ph-claude px-2 py-0.5 rounded text-xs">word</span>
+          <span>Claude confirmed</span>
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="ph-both px-2 py-0.5 rounded text-xs">word</span>
+          <span>Both models agree</span>
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="ph-downgraded px-2 py-0.5 rounded text-xs">word</span>
+          <span>False positive (downgraded)</span>
+        </span>
+      </div>
+
+      {/* Stats bar */}
+      {stats && (
+        <div className="grid grid-cols-4 gap-2">
+          {[
+            { label: "Sentences", value: stats.total, color: "text-gray-300" },
+            { label: "Confirmed bias", value: stats.confirmed, color: "text-red-400" },
+            { label: "Downgraded", value: stats.downgraded, color: "text-yellow-400" },
+            { label: "GPT only", value: stats.auditorOnly, color: "text-orange-400" },
+          ].map(s => (
+            <div key={s.label} className="bg-gray-900 rounded-lg p-3 border border-gray-800 text-center">
+              <div className={`text-2xl font-bold ${s.color}`}>{s.value}</div>
+              <div className="text-xs text-gray-500 mt-0.5">{s.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Highlighted article */}
+      {results && (
+        <div
+          className="flex-1 bg-gray-900 rounded-xl p-5 border border-gray-800 overflow-y-auto leading-8 text-gray-200 text-sm"
+          onClick={() => document.querySelectorAll('.tooltip').forEach(t => t.remove())}
+        >
+          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">
+            Analysis Result — click highlighted text for details
+          </h3>
+          <div className="relative">
+            {results.map((item, i) => (
+              <SentenceSpan key={i} item={item} idx={i} />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Logs Panel ─────────────────────────────────────────────────────
+function LogsPanel() {
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    setLoading(true);
+    const res = await fetch(`${API}/api/logs?limit=100`);
+    const data = await res.json();
+    setLogs(data);
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const toolColor = (t) => {
+    if (t.includes("gpt") || t.includes("audit")) return "text-blue-400";
+    if (t.includes("claude") || t.includes("verify")) return "text-purple-400";
+    return "text-gray-400";
+  };
+
+  return (
+    <div className="h-full flex flex-col gap-3">
+      <div className="flex justify-between items-center">
+        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">MCP Audit Log ({logs.length} entries)</h3>
+        <button onClick={load} className="text-xs text-indigo-400 hover:text-indigo-300">↻ Refresh</button>
+      </div>
+      {loading ? <p className="text-gray-500 text-sm">Loading…</p> : (
+        <div className="flex-1 overflow-y-auto rounded-lg border border-gray-800 text-xs font-mono">
+          <table className="w-full">
+            <thead className="sticky top-0 bg-gray-900 border-b border-gray-800">
+              <tr>
+                <th className="text-left p-2 text-gray-500">Time</th>
+                <th className="text-left p-2 text-gray-500">Tool</th>
+                <th className="text-left p-2 text-gray-500">Input</th>
+                <th className="text-left p-2 text-gray-500">Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logs.map((log, i) => {
+                const ts = new Date(log.ts * 1000).toLocaleTimeString();
+                const input = log.arguments?.sentence?.slice(0, 40) + "…" || "—";
+                const score = log.result?.bias_score ?? log.result?.confidence ?? "—";
+                return (
+                  <tr key={i} className="log-row border-b border-gray-800/50 hover:bg-gray-800/50">
+                    <td className="p-2 text-gray-500">{ts}</td>
+                    <td className={`p-2 font-semibold ${toolColor(log.tool_name)}`}>{log.tool_name}</td>
+                    <td className="p-2 text-gray-400 max-w-xs truncate">{input}</td>
+                    <td className="p-2 text-gray-300">{typeof score === "number" ? score.toFixed(3) : score}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Artifacts Panel ────────────────────────────────────────────────
+function ArtifactsPanel() {
+  const [files, setFiles] = useState([]);
+  useEffect(() => {
+    fetch(`${API}/api/artifacts`).then(r => r.json()).then(setFiles);
+  }, []);
+
+  const icon = (ext) => ({
+    ".json": "📊", ".csv": "📋", ".png": "🖼️", ".md": "📝"
+  }[ext] || "📄");
+
+  return (
+    <div className="h-full flex flex-col gap-3">
+      <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Output Artifacts</h3>
+      <div className="flex-1 overflow-y-auto space-y-1.5">
+        {files.map((f, i) => (
+          <div key={i} className="flex justify-between items-center bg-gray-800/60 rounded-lg px-3 py-2.5 border border-gray-800">
+            <span className="flex items-center gap-2 text-sm text-gray-300">
+              <span>{icon(f.ext)}</span>
+              <span className="font-mono text-xs">{f.name}</span>
+            </span>
+            <span className="text-xs text-gray-500">{f.size_kb} KB</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Metrics Panel ──────────────────────────────────────────────────
+function MetricsPanel() {
+  const [pipeline, setPipeline] = useState(null);
+  const [multi, setMulti] = useState(null);
+
+  useEffect(() => {
+    fetch(`${API}/api/metrics/pipeline`).then(r => r.json()).then(setPipeline).catch(() => {});
+    fetch(`${API}/api/metrics/multi`).then(r => r.json()).then(setMulti).catch(() => {});
+  }, []);
+
+  const Bar = ({ label, value, max = 1, color = "bg-indigo-500" }) => (
+    <div>
+      <div className="flex justify-between text-xs text-gray-400 mb-1">
+        <span>{label}</span><span className="font-mono">{(value * 100).toFixed(1)}%</span>
+      </div>
+      <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+        <div className={`h-full ${color} rounded-full transition-all duration-500`} style={{ width: `${(value / max) * 100}%` }} />
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="h-full overflow-y-auto space-y-5 text-sm">
+      {pipeline && (
+        <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-800">
+          <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4">Dual-Agent Pipeline Performance</h4>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+            <div>
+              <p className="text-xs text-orange-400 font-semibold mb-2">GPT Auditor Only</p>
+              <div className="space-y-2">
+                <Bar label="F1 Macro"  value={pipeline.auditor_only.f1_macro}  color="bg-orange-500" />
+                <Bar label="Precision" value={pipeline.auditor_only.precision}  color="bg-orange-400" />
+                <Bar label="Recall"    value={pipeline.auditor_only.recall}     color="bg-orange-300" />
+              </div>
+            </div>
+            <div>
+              <p className="text-xs text-purple-400 font-semibold mb-2">GPT → Claude Pipeline</p>
+              <div className="space-y-2">
+                <Bar label="F1 Macro"  value={pipeline.pipeline.f1_macro}  color="bg-purple-500" />
+                <Bar label="Precision" value={pipeline.pipeline.precision}  color="bg-purple-400" />
+                <Bar label="Recall"    value={pipeline.pipeline.recall}     color="bg-purple-300" />
+              </div>
+            </div>
+          </div>
+          <div className="mt-4 pt-3 border-t border-gray-700 grid grid-cols-3 gap-2 text-center">
+            {[
+              { label: "Verifier calls", value: pipeline.verifier_calls },
+              { label: "Downgrades", value: pipeline.verifier_downgrades },
+              { label: "Revision rate", value: `${(pipeline.revision_rate * 100).toFixed(1)}%` },
+            ].map(s => (
+              <div key={s.label} className="bg-gray-900 rounded-lg p-2">
+                <div className="text-lg font-bold text-indigo-400">{s.value}</div>
+                <div className="text-xs text-gray-500">{s.label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {multi && (
+        <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-800">
+          <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4">Multi-Provider Agreement</h4>
+          <div className="space-y-2">
+            <Bar label="Agreement rate" value={multi.agreement_rate}  color="bg-green-500" />
+            <Bar label="Cohen's κ"      value={multi.cohen_kappa}     color="bg-teal-500" />
+            <Bar label="Pearson r"      value={multi.pearson_r}       color="bg-cyan-500" />
+          </div>
+          <div className="mt-4 grid grid-cols-3 gap-2 text-xs">
+            {Object.entries(multi.outlet_breakdown).map(([outlet, m]) => (
+              <div key={outlet} className="bg-gray-900 rounded-lg p-2 text-center">
+                <div className="font-bold text-gray-300 uppercase text-xs">{outlet}</div>
+                <div className="text-green-400 font-mono mt-1">{(m.agreement_rate * 100).toFixed(0)}%</div>
+                <div className="text-gray-500">agree</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Eval Panel ─────────────────────────────────────────────────────
+function EvalPanel() {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    fetch(`${API}/api/metrics/pipeline`).then(r => r.json()).then(setData).catch(() => {});
+  }, []);
+
+  if (!data) return <p className="text-gray-500 text-sm">Loading evaluation data…</p>;
+
+  const outlets = data.outlet_breakdown || {};
+
+  return (
+    <div className="h-full overflow-y-auto space-y-4 text-sm">
+      <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-800">
+        <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">Per-Outlet F1 Macro</h4>
+        <div className="space-y-3">
+          {Object.entries(outlets).map(([outlet, m]) => (
+            <div key={outlet}>
+              <div className="flex justify-between text-xs text-gray-300 mb-1">
+                <span className="font-semibold uppercase">{outlet}</span>
+                <span>{(m.auditor_f1 * 100).toFixed(1)}% → {(m.pipeline_f1 * 100).toFixed(1)}%</span>
+              </div>
+              <div className="flex gap-1 h-3">
+                <div className="bg-orange-500 rounded-l-full" style={{ width: `${m.auditor_f1 * 100}%` }} />
+                <div className="bg-purple-500 rounded-r-full" style={{ width: `${m.pipeline_f1 * 100}%` }} />
+              </div>
+              <div className="flex justify-between text-xs text-gray-600 mt-0.5">
+                <span>Auditor</span><span>{m.downgrades} downgrade{m.downgrades !== 1 ? "s" : ""} / {m.verifier_calls} calls</span><span>Pipeline</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-800">
+        <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">Overall Metrics</h4>
+        <div className="grid grid-cols-2 gap-3 text-xs">
+          {[
+            { label: "Accuracy (pipeline)",  value: data.pipeline.accuracy },
+            { label: "Precision (pipeline)", value: data.pipeline.precision },
+            { label: "Recall (pipeline)",    value: data.pipeline.recall },
+            { label: "F1 Macro (pipeline)",  value: data.pipeline.f1_macro },
+          ].map(m => (
+            <div key={m.label} className="bg-gray-900 rounded-lg p-3 text-center">
+              <div className="text-xl font-bold text-indigo-400">{(m.value * 100).toFixed(1)}%</div>
+              <div className="text-gray-500 mt-0.5">{m.label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Root App ───────────────────────────────────────────────────────
+function App() {
+  const [tab, setTab] = useState("benchmarking");
+  const [serverOk, setServerOk] = useState(null);
+
+  useEffect(() => {
+    fetch(`${API}/api/health`)
+      .then(r => r.json())
+      .then(() => setServerOk(true))
+      .catch(() => setServerOk(false));
+  }, []);
+
+  const tabs = [
+    { id: "logs",         label: "Logs" },
+    { id: "artifacts",    label: "Artifacts" },
+    { id: "benchmarking", label: "Benchmarking" },
+    { id: "evaluation",   label: "Evaluation" },
+  ];
+
+  return (
+    <div className="min-h-screen flex flex-col" onClick={() => {}}>
+      {/* Header */}
+      <header className="border-b border-gray-800 px-6 py-3 flex items-center justify-between bg-gray-950/80 backdrop-blur sticky top-0 z-10">
+        <div className="flex items-center gap-3">
+          <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center text-sm font-bold">B</div>
+          <div>
+            <h1 className="text-sm font-bold text-white">Dual-Agent Bias Detector</h1>
+            <p className="text-xs text-gray-500">GPT-4o-mini auditor · Claude-haiku verifier · MCP audit trail</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className={`w-2 h-2 rounded-full ${serverOk === true ? "bg-green-500" : serverOk === false ? "bg-red-500" : "bg-yellow-500"}`} />
+          <span className="text-gray-400">{serverOk === true ? "Server connected" : serverOk === false ? "Server offline" : "Connecting…"}</span>
+        </div>
+      </header>
+
+      {/* Body */}
+      <div className="flex flex-1 gap-0 overflow-hidden" style={{ height: "calc(100vh - 57px)" }}>
+
+        {/* Left — Article Panel */}
+        <div className="flex-1 p-5 overflow-y-auto border-r border-gray-800">
+          <ArticlePanel onResults={() => setTab("logs")} />
+        </div>
+
+        {/* Right — Side Panel */}
+        <div className="w-[420px] flex flex-col bg-gray-950">
+          {/* Tabs */}
+          <div className="flex border-b border-gray-800 px-2 pt-2 shrink-0">
+            {tabs.map(t => (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`px-4 py-2 text-xs font-semibold transition-colors ${tab === t.id ? "tab-active" : "tab-inactive hover:text-gray-300"}`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Tab content */}
+          <div className="flex-1 p-4 overflow-hidden flex flex-col">
+            {tab === "logs"         && <LogsPanel />}
+            {tab === "artifacts"    && <ArtifactsPanel />}
+            {tab === "benchmarking" && <MetricsPanel />}
+            {tab === "evaluation"   && <EvalPanel />}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

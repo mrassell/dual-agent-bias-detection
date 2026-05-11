@@ -240,14 +240,17 @@ width   = 0.25
 try:
     with open(OUTPUTS / "eval_full_auditor_only.json") as f:
         roberta = json.load(f)
-    rob_f1  = roberta["f1_macro"]
+    # Prefer biased-class F1; fall back for older eval files
+    rob_f1  = roberta.get("f1_binary", roberta["f1_macro"])
     rob_pre = roberta["precision"]
     rob_rec = roberta["recall"]
 except FileNotFoundError:
     rob_f1 = rob_pre = rob_rec = 0.0
 
-f1_vals  = [llm_metrics["auditor_only"]["f1_macro"],
-            llm_metrics["pipeline"]["f1_macro"],
+# Prefer biased-class F1 (f1_binary) as the primary metric; fall back to f1_macro
+# for older JSON files that predate this change.
+f1_vals  = [llm_metrics["auditor_only"].get("f1_binary", llm_metrics["auditor_only"]["f1_macro"]),
+            llm_metrics["pipeline"].get("f1_binary", llm_metrics["pipeline"]["f1_macro"]),
             rob_f1]
 pre_vals = [llm_metrics["auditor_only"]["precision"],
             llm_metrics["pipeline"]["precision"],
@@ -256,7 +259,7 @@ rec_vals = [llm_metrics["auditor_only"]["recall"],
             llm_metrics["pipeline"]["recall"],
             rob_rec]
 
-b1 = ax.bar(x - width, f1_vals,  width, label="F1 Macro",  color="#4A90D9")
+b1 = ax.bar(x - width, f1_vals,  width, label="F1 (biased class)",  color="#4A90D9")
 b2 = ax.bar(x,         pre_vals, width, label="Precision", color="#4CAF73")
 b3 = ax.bar(x + width, rec_vals, width, label="Recall",    color="#E8534A")
 
